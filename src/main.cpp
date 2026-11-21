@@ -38,6 +38,7 @@ struct Panel {
 } P;
 HWND g_hide;
 HWND g_viewBtn[7], g_preview, g_alpha;
+HWND g_qTitle, g_qClear, g_qClose; bool g_queueOpen = true;                                            // the strip above the job list: title, "Clear finished", "Close"
 
 // image tab controls
 HWND g_imgLabel[5], g_imgEdit[5], g_imgConvert, g_imgRandom, g_imgInfo;
@@ -388,12 +389,12 @@ static void refreshQueue() {
         std::wstring n = W(g_jobs[i].name), s = W(g_jobs[i].state); LVITEMW it = {}; it.mask = LVIF_TEXT; it.iItem = (int)i; it.pszText = &n[0]; ListView_InsertItem(g_queue, &it);
         ListView_SetItemText(g_queue, (int)i, 1, &s[0]); std::wstring pc = std::to_wstring(g_jobs[i].percent) + L" %"; ListView_SetItemText(g_queue, (int)i, 2, &pc[0]);
     }
-    ShowWindow(g_queue, g_jobs.empty() ? SW_HIDE : SW_SHOW); layout();
+    const int vis = (!g_jobs.empty() && g_queueOpen) ? SW_SHOW : SW_HIDE; ShowWindow(g_queue, vis); ShowWindow(g_qTitle, vis); ShowWindow(g_qClear, vis); ShowWindow(g_qClose, vis); layout();
 }
 // ---- the shared queue of Image-to-3D jobs: one worker runs them one after the other
 struct JobReq { uint64_t id; std::string image, title; H3DParams p; std::shared_ptr<std::atomic<bool>> cancel; };
 struct JobUpdate { uint64_t id; std::string state; int percent; };
-struct JobDone { uint64_t id; std::string title; bool ok; std::string err; std::shared_ptr<Mesh> mesh; };
+struct JobDone { uint64_t id; std::string title; bool ok; std::string err; std::shared_ptr<Mesh> mesh; std::string saved; };
 static std::deque<JobReq> g_pendingJobs; static std::map<uint64_t, std::shared_ptr<std::atomic<bool>>> g_cancels; static bool g_workerBusy = false;
 static void jobWorker() {
     for (;;) {
@@ -402,8 +403,13 @@ static void jobWorker() {
         if (j.cancel->load()) { PostMessageW(g_main, WM_JOB_DONE, 0, (LPARAM) new JobDone{j.id, j.title, false, "cancelled", nullptr}); continue; }
         auto mesh = std::make_shared<Mesh>(); std::string err;
         auto prog = [&](const std::string& s, float f) { PostMessageW(g_main, WM_JOB_UPDATE, 0, (LPARAM) new JobUpdate{j.id, s, (int)(f * 100)}); return !j.cancel->load(); };
-        const bool ok = imageToMesh(j.image, j.p, *mesh, prog, err);
-        PostMessageW(g_main, WM_JOB_DONE, 0, (LPARAM) new JobDone{j.id, j.title, ok, err, mesh});
+        const bool ok = imageToMesh(j.image, j.p, *mesh, prog, err); std::string saved;
+        if (ok) {                                                                                             // every result is kept: output\<picture>_seed<n>_<time>.glb next to the program
+            sys::makeDirs(sys::outputDir()); std::string stem = baseName(j.title); const size_t dot = stem.find_last_of('.'); if (dot != std::string::npos) stem.resize(dot);
+            saved = sys::join(sys::outputDir(), stem + "_seed" + std::to_string(j.p.seed) + "_" + sys::timestamp() + ".glb"); std::string e2;
+            if (!saveMeshAny(saved, mesh->v, mesh->idx, e2)) { saved.clear(); }
+        }
+        PostMessageW(g_main, WM_JOB_DONE, 0, (LPARAM) new JobDone{j.id, j.title, ok, err, mesh, saved});
     }
 }
 static void cmdConvert() {
@@ -417,16 +423,16 @@ static void cmdConvert() {
     JobReq r; r.title = im->title; r.image = im->path; r.cancel = std::make_shared<std::atomic<bool>>(false);
     r.p.seed = (unsigned)im->seed; r.p.steps = im->steps; r.p.cfg = im->cfg; r.p.resolution = im->resolution; r.p.threshold = im->threshold; r.p.checkpoint = hunyuanModelPath();
     Job j; { std::lock_guard<std::mutex> g(g_jobMx); r.id = j.id = g_nextJob++; j.name = "Image to 3D: " + im->title + "  (seed " + std::to_string(im->seed) + ")"; j.state = "Waiting"; g_jobs.push_back(j); g_cancels[r.id] = r.cancel; g_pendingJobs.push_back(r); if (!g_workerBusy) { g_workerBusy = true; std::thread(jobWorker).detach(); } }
-    refreshQueue(); updateStatus();
+    g_queueOpen = true; refreshQueue(); updateStatus();
 }
 static void jobUpdate(JobUpdate* u) {
     { std::lock_guard<std::mutex> g(g_jobMx); for (auto& j : g_jobs) if (j.id == u->id) { j.state = u->state; j.percent = u->percent; } }
     delete u; refreshQueue();
 }
 static void jobDone(JobDone* d) {
-    { std::lock_guard<std::mutex> g(g_jobMx); for (auto& j : g_jobs) if (j.id == d->id) { j.state = d->ok ? "Done: opened in a new tab" : (d->err == "cancelled" ? "Cancelled" : "Failed: " + d->err); j.percent = d->ok ? 100 : j.percent; } g_cancels.erase(d->id); }
+    { std::lock_guard<std::mutex> g(g_jobMx); for (auto& j : g_jobs) if (j.id == d->id) { j.state = d->ok ? (d->saved.empty() ? "Done: opened in a new tab (it could not be saved to the output folder)" : "Done: saved as output\\" + baseName(d->saved) + " and opened in a new tab") : (d->err == "cancelled" ? "Cancelled" : "Failed: " + d->err); j.percent = d->ok ? 100 : j.percent; } g_cancels.erase(d->id); }
     if (d->ok && d->mesh) {
-        auto doc = std::make_unique<ModelDoc>(); doc->title = d->title + " (3D)"; doc->setMesh(d->mesh); doc->dirty = true; addDoc(std::move(doc));
+        auto doc = std::make_unique<ModelDoc>(); doc->title = d->title + " (3D)"; doc->setMesh(d->mesh); doc->path = d->saved; doc->dirty = d->saved.empty(); addDoc(std::move(doc));
     }
     delete d; refreshQueue();
 }
@@ -459,10 +465,13 @@ static void layout() {
     RECT rc; GetClientRect(g_main, &rc); const int Wd = rc.right, Hd = rc.bottom;
     const int tbH = toolbarHeight(); MoveWindow(g_toolbar, 0, 0, Wd, tbH, TRUE);
     SendMessageW(g_status, WM_SIZE, 0, 0); RECT sr; GetWindowRect(g_status, &sr); const int stH = sr.bottom - sr.top;
-    const int tabH = 28, qH = IsWindowVisible(g_queue) ? 110 : 0, top = tbH + tabH, ch = std::max(50, Hd - top - stH - qH);
+    const int tabH = 28, qH = IsWindowVisible(g_queue) ? 134 : 0, top = tbH + tabH, ch = std::max(50, Hd - top - stH - qH);
     MoveWindow(g_tab, 0, tbH, Wd, tabH, TRUE);
     MoveWindow(g_view, 0, top, Wd, ch, TRUE); MoveWindow(g_imgPanel, 0, top, Wd, ch, TRUE);
-    if (qH) MoveWindow(g_queue, 0, Hd - stH - qH, Wd, qH, TRUE);
+    if (qH) {
+        MoveWindow(g_queue, 0, Hd - stH - 110, Wd, 110, TRUE); const int by = Hd - stH - qH;
+        MoveWindow(g_qTitle, 8, by, std::max(100, Wd - 200), 24, TRUE); MoveWindow(g_qClear, Wd - 164, by + 1, 120, 22, TRUE); MoveWindow(g_qClose, Wd - 34, by + 1, 26, 22, TRUE);
+    }
     MoveWindow(g_welcome, Wd / 2 - 320, top + ch / 2 - 30, 640, 60, TRUE);
     // overlay buttons
     int y = top + 12;
@@ -482,7 +491,7 @@ static HMENU buildMenu() {
     AppendMenuW(exp, MF_STRING, IDM_EXP_CURTAIN_OBJ, L"Curtain surface - STL, OBJ, STEP, GLB, ...  (the wrap as a mesh)..."); AppendMenuW(exp, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(exp, MF_STRING, IDM_EXP_OBJ, L"Object - STL, OBJ, STEP, GLB, glTF, PLY, 3MF, OFF...");
     AppendMenuW(file, MF_POPUP, (UINT_PTR)exp, L"&Export"); AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(file, MF_STRING, IDM_DOWNLOAD, L"&Download models and CUDA libraries..."); AppendMenuW(file, MF_STRING, IDM_CLOSE, L"&Close tab\tCtrl+W"); AppendMenuW(file, MF_STRING, IDM_EXIT, L"E&xit");
+    AppendMenuW(file, MF_STRING, IDM_DOWNLOAD, L"&Download models and CUDA libraries..."); AppendMenuW(file, MF_STRING, IDM_QUEUE, L"Job &queue (show / hide)"); AppendMenuW(file, MF_STRING, IDM_CLOSE, L"&Close tab\tCtrl+W"); AppendMenuW(file, MF_STRING, IDM_EXIT, L"E&xit");
     AppendMenuW(edit, MF_STRING, IDM_UNDO, L"&Undo\tCtrl+Z"); AppendMenuW(edit, MF_STRING, IDM_REDO, L"&Redo\tCtrl+Y");
     AppendMenuW(model, MF_STRING, IDM_CENTER, L"&Center on the plate"); AppendMenuW(model, MF_STRING, IDM_RESET, L"&Reset size, rotation and position"); AppendMenuW(model, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(model, MF_STRING, IDM_MODE_SMOOTH, L"Curtain: &Smooth - sphere limit"); AppendMenuW(model, MF_STRING, IDM_MODE_HULL, L"Curtain: Convex &hull - distance"); AppendMenuW(model, MF_SEPARATOR, 0, nullptr);
@@ -526,6 +535,12 @@ static void createChildren() {
     g_queue = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"", WS_CHILD | LVS_REPORT | LVS_SINGLESEL | LVS_NOSORTHEADER, 0, 0, 10, 10, g_main, (HMENU)IDC_QUEUE, g_inst, nullptr); SendMessageW(g_queue, WM_SETFONT, (WPARAM)g_font, TRUE);
     ListView_SetExtendedListViewStyle(g_queue, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
     { const wchar_t* c[] = {L"Job", L"State", L"Progress"}; const int w[] = {320, 560, 80}; for (int i = 0; i < 3; i++) { LVCOLUMNW col = {}; col.mask = LVCF_TEXT | LVCF_WIDTH; col.pszText = (LPWSTR)c[i]; col.cx = w[i]; ListView_InsertColumn(g_queue, i, &col); } }
+    g_qTitle = mk(g_main, L"STATIC", L"  Job queue   (double-click a running job to cancel it)", SS_LEFT | SS_CENTERIMAGE, 0);
+    g_qClear = mk(g_main, L"BUTTON", L"Clear finished", BS_PUSHBUTTON | WS_TABSTOP, IDC_QCLEAR); g_qClose = mk(g_main, L"BUTTON", L"", BS_OWNERDRAW | WS_TABSTOP, IDC_QCLOSE);
+    { HWND tip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, g_main, nullptr, g_inst, nullptr);
+      TOOLINFOW ti = {sizeof ti}; ti.uFlags = TTF_SUBCLASS | TTF_IDISHWND; ti.hwnd = g_main; ti.uId = (UINT_PTR)g_qClose; ti.lpszText = (LPWSTR)L"Close the job queue (File > Job queue shows it again; running jobs go on)";
+      SendMessageW(tip, TTM_ADDTOOLW, 0, (LPARAM)&ti); }
+    for (HWND h : {g_qTitle, g_qClear, g_qClose}) ShowWindow(h, SW_HIDE);
     g_welcome = mk(g_main, L"STATIC", L"Open a 3D model (OBJ, STL, PLY, glTF/GLB) or a picture to turn into a model.\r\nFile > Open, or drop a file on this window.", SS_CENTER, 0);
     // view overlay: quick view stack and the curtain preview switch
     const wchar_t* vn[7] = {L"Center", L"Left", L"Right", L"Front", L"Back", L"Top", L"Bottom"};
@@ -569,6 +584,16 @@ static LRESULT CALLBACK mainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_TIMER: if (wp == TIMER_CURTAIN) { KillTimer(h, TIMER_CURTAIN); if (ModelDoc* d = activeModel()) requestCurtain(d); } return 0;
+    case WM_DRAWITEM: {
+        DRAWITEMSTRUCT* di = (DRAWITEMSTRUCT*)lp;
+        if (di->CtlID == IDC_QCLOSE) {                                                                        // red square, white X
+            const bool down = (di->itemState & ODS_SELECTED) != 0; HBRUSH br = CreateSolidBrush(down ? RGB(165, 25, 25) : RGB(214, 48, 48)); FillRect(di->hDC, &di->rcItem, br); DeleteObject(br);
+            HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255)); HGDIOBJ op = SelectObject(di->hDC, pen); const int cx = (di->rcItem.left + di->rcItem.right) / 2, cy = (di->rcItem.top + di->rcItem.bottom) / 2, r = 5;
+            MoveToEx(di->hDC, cx - r, cy - r, nullptr); LineTo(di->hDC, cx + r + 1, cy + r + 1); MoveToEx(di->hDC, cx + r, cy - r, nullptr); LineTo(di->hDC, cx - r - 1, cy + r + 1);
+            SelectObject(di->hDC, op); DeleteObject(pen); return TRUE;
+        }
+        break;
+    }
     case WM_JOB_UPDATE: jobUpdate((JobUpdate*)lp); return 0;
     case WM_JOB_DONE: jobDone((JobDone*)lp); return 0;
     case WM_CURTAIN_DONE: {
@@ -625,6 +650,11 @@ static LRESULT CALLBACK mainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         case IDC_UNIFORM: setUniformScale(SendMessageW(P.uniform, BM_GETCHECK, 0, 0) == BST_CHECKED); break;
         case IDC_MODE: if (code == CBN_SELCHANGE) if (ModelDoc* d = activeModel()) { int s = (int)SendMessageW(P.mode, CB_GETCURSEL, 0, 0); d->beginEdit(); d->cur.cp.mode = s == 1 ? CurtainMode::Hull : CurtainMode::Smooth; d->endEdit(); refreshCommands(); refreshTabs(); requestCurtain(d); viewRedraw(); } break;
         case IDC_CONVERT: cmdConvert(); break;
+        case IDC_QCLOSE: g_queueOpen = false; refreshQueue(); break;                                       // hides the panel; the jobs go on, and a new job (or File > Job queue) brings it back
+        case IDM_QUEUE: g_queueOpen = !g_queueOpen; refreshQueue(); break;
+        case IDC_QCLEAR: {                                                                                  // removes the finished, failed and cancelled jobs from the list
+            { std::lock_guard<std::mutex> g(g_jobMx); g_jobs.erase(std::remove_if(g_jobs.begin(), g_jobs.end(), [](const Job& j) { return j.state.rfind("Done", 0) == 0 || j.state.rfind("Failed", 0) == 0 || j.state == "Cancelled"; }), g_jobs.end()); }
+            refreshQueue(); break; }
         case IDM_ABOUT: msg("Doppler's 3D Curtain\n\nWraps a mathematical curtain (a distance field) around 3D models for the procedural engine, and turns pictures into 3D models.\n\nFree for personal use; enterprise use requires US$100 per workstation (see LICENSE)."); break;
         }
         return 0;

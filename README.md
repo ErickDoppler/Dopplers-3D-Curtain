@@ -45,7 +45,7 @@ The controls follow Ultimaker Cura: right mouse button rotates and tilts, middle
 
 ![A picture turned into a model: the front view of the result](docs/screenshot-image-to-3d.png)
 
-Open a picture (PNG, JPG, BMP) in a tab, set the options and press **Convert to 3D**. The job goes to the shared queue (double-click a job to cancel it); the finished model opens in a new tab, upright on the plate, ready for the curtain.
+Open a picture (PNG, JPG, BMP) in a tab, set the options and press **Convert to 3D**. The job goes to the shared queue (double-click a job to cancel it). When it is done, the model is **saved automatically** as `output\<picture>_seed<n>_<date-time>.glb` next to the program and opens in a new tab, upright on the plate, ready for the curtain. The queue panel has **Clear finished** and a small red **X** to close it (File > Job queue shows it again; a new job brings it back by itself).
 
 This is a **port of the Hunyuan3D 2.0 shape network that runs without ComfyUI**, on ggml (CPU or CUDA): the DINOv2-giant image encoder, the Flux-style flow-matching transformer with classifier-free guidance (Euler, 20 steps by default), the shape decoder, and surface extraction. Each stage was checked against the numbers of ComfyUI's own pipeline: the image preprocessing matches PyTorch exactly, the transformer matches to 1e-3 or better, the decoder to 1e-5 (`tools/h3d_ref.py`, `tools/h3d_test.cpp`).
 

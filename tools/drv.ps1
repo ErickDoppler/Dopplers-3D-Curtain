@@ -12,6 +12,8 @@ public class D {
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
+  public struct RC { public int l, t, r, b; } [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RC r);
+  public static List<IntPtr> TopEdits(IntPtr main) { var l = new List<IntPtr>(); foreach (var h in Kids(main, "Edit")) if (GetParent(h) == main) l.Add(h); l.Sort((a, b) => { RC x, y; GetWindowRect(a, out x); GetWindowRect(b, out y); return x.t.CompareTo(y.t); }); return l; }
   public delegate bool CB(IntPtr h, IntPtr l);
   [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr p, CB c, IntPtr l);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
@@ -36,7 +38,7 @@ foreach ($step in ($Do -split ';')) {
                $r = New-Object PW+R; [void][PW]::GetWindowRect($main, [ref]$r); $bmp = New-Object System.Drawing.Bitmap ($r.r-$r.l), ($r.b-$r.t); $gg = [System.Drawing.Graphics]::FromImage($bmp); $dc = $gg.GetHdc(); [void][PW]::PrintWindow($main, $dc, 2); $gg.ReleaseHdc($dc)
                New-Item -ItemType Directory -Force $SnapDir | Out-Null; $bmp.Save("$SnapDir\$($a[1]).png"); "shot $SnapDir\$($a[1]).png" }
     'status' { "status: " + [D]::Text($status) }
-    'imgedit'{ $e = [D]::Kids($main, 'Edit') | Where-Object { [D]::GetParent($_) -eq $main }; $i = [int]$a[1]; [void][D]::SendMessageW($e[$i], 0xC, [IntPtr]::Zero, $a[2]) }
+    'imgedit'{ $e = [D]::TopEdits($main); $i = [int]$a[1]; [void][D]::SendMessageW($e[$i], 0xC, [IntPtr]::Zero, $a[2]) }
     'edits'  { $e = [D]::Kids($panel, "Edit"); $o = @(); foreach ($h in $e) { if ([D]::IsWindowVisible($h)) { $o += [D]::Text($h) } }; "edits: " + ($o -join ' | ') }
     'settext'{ $e = [D]::Kids($panel, "Edit"); $i = [int]$a[1]; [void][D]::SendMessageW($e[$i], 0xC, [IntPtr]::Zero, $a[2]); [void][D]::PostMessageW($main, 0x111, [IntPtr](0x200 -shl 16 -bor (1400 + $i * 3 + 2)), $e[$i]) }
     'down'   { [void][D]::PostMessageW($view, 0x201, [IntPtr]1, (MkLp ([int]$a[1]) ([int]$a[2]))) }
