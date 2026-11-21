@@ -262,6 +262,8 @@ static void showActive() {
     if (!d) ShowWindow(g_panel, SW_HIDE);
     for (int i = 0; i < 5; i++) { ShowWindow(g_imgLabel[i], im ? SW_SHOW : SW_HIDE); ShowWindow(g_imgEdit[i], im ? SW_SHOW : SW_HIDE); }
     for (HWND hh : {g_imgRandom, g_imgConvert, g_imgInfo}) ShowWindow(hh, im ? SW_SHOW : SW_HIDE);
+    if (im) { for (int i = 0; i < 5; i++) { SetWindowPos(g_imgLabel[i], HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); SetWindowPos(g_imgEdit[i], HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); }
+              for (HWND hh : {g_imgRandom, g_imgConvert, g_imgInfo}) SetWindowPos(hh, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); }
     if (im) {
         wchar_t b[40]; swprintf(b, 40, L"%d", im->seed); SetWindowTextW(g_imgEdit[0], b); swprintf(b, 40, L"%d", im->steps); SetWindowTextW(g_imgEdit[1], b);
         swprintf(b, 40, L"%.1f", im->cfg); SetWindowTextW(g_imgEdit[2], b); swprintf(b, 40, L"%d", im->resolution); SetWindowTextW(g_imgEdit[3], b); swprintf(b, 40, L"%.2f", im->threshold); SetWindowTextW(g_imgEdit[4], b);
@@ -468,8 +470,8 @@ static void layout() {
     y += 6; SetWindowPos(g_preview, HWND_TOP, 12, y, 84, 28, SWP_NOACTIVATE); SetWindowPos(g_hide, HWND_TOP, 12, y + 32, 84, 28, SWP_NOACTIVATE); SetWindowPos(g_alpha, HWND_TOP, 36, y + 66, 36, 120, SWP_NOACTIVATE);
     // image tab controls on the right
     const int px = Wd - 290; int iy = 24;
-    for (int i = 0; i < 5; i++) { SetWindowPos(g_imgLabel[i], nullptr, px, top + iy + 3, 130, 20, SWP_NOZORDER); SetWindowPos(g_imgEdit[i], nullptr, px + 140, top + iy, 120, 24, SWP_NOZORDER); iy += 34; if (i == 0) { SetWindowPos(g_imgRandom, nullptr, px + 140, top + iy, 130, 20, SWP_NOZORDER); iy += 26; } }
-    SetWindowPos(g_imgConvert, nullptr, px, top + iy + 10, 260, 36, SWP_NOZORDER); SetWindowPos(g_imgInfo, nullptr, px, top + iy + 56, 260, 120, SWP_NOZORDER);
+    for (int i = 0; i < 5; i++) { SetWindowPos(g_imgLabel[i], HWND_TOP, px, top + iy + 3, 130, 20, SWP_NOACTIVATE); SetWindowPos(g_imgEdit[i], HWND_TOP, px + 140, top + iy, 120, 24, SWP_NOACTIVATE); iy += 34; if (i == 0) { SetWindowPos(g_imgRandom, HWND_TOP, px + 140, top + iy, 130, 20, SWP_NOACTIVATE); iy += 26; } }
+    SetWindowPos(g_imgConvert, HWND_TOP, px, top + iy + 10, 260, 36, SWP_NOACTIVATE); SetWindowPos(g_imgInfo, HWND_TOP, px, top + iy + 56, 260, 120, SWP_NOACTIVATE);
     if (g_tool != Tool::None && activeModel()) panelConfigure();
 }
 
