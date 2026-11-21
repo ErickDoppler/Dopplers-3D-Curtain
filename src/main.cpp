@@ -43,7 +43,7 @@ HWND g_qTitle, g_qClear, g_qClose; bool g_queueOpen = true;                     
 // image tab controls
 HWND g_imgLabel[5], g_imgEdit[5], g_imgConvert, g_imgRandom, g_imgInfo;
 
-struct Job { uint64_t id; std::string name; std::string state; int percent = 0; };
+struct Job { uint64_t id; std::string name; std::string state; int percent = 0; std::string params; };
 std::vector<Job> g_jobs; std::mutex g_jobMx; uint64_t g_nextJob = 1;
 }  // namespace
 
@@ -274,6 +274,12 @@ static void showActive() {
     layout(); panelConfigure(); refreshCommands(); updateStatus(); viewRedraw();
     if (d && curtainWanted(d)) requestCurtain(d);
 }
+static void selectDoc(int i);
+static void switchTab(int delta) { const int n = (int)g_docs.size(); if (n > 1) selectDoc(((g_active < 0 ? 0 : g_active) + delta + n) % n); }
+static bool typingFocus() {                                                                                 // keys belong to the control the user is typing in
+    wchar_t cls[40] = {}; GetClassNameW(GetFocus(), cls, 40);
+    return !wcscmp(cls, L"Edit") || !wcscmp(cls, L"ComboBox") || !wcscmp(cls, L"ComboLBox") || !wcscmp(cls, L"SysListView32");
+}
 static void selectDoc(int i) { g_active = i; if (i >= 0) TabCtrl_SetCurSel(g_tab, i); showActive(); }
 static void addDoc(std::unique_ptr<Doc> d) { d->id = g_nextId++; g_docs.push_back(std::move(d)); refreshTabs(); selectDoc((int)g_docs.size() - 1); }
 
@@ -388,6 +394,7 @@ static void refreshQueue() {
     for (size_t i = 0; i < g_jobs.size(); i++) {
         std::wstring n = W(g_jobs[i].name), s = W(g_jobs[i].state); LVITEMW it = {}; it.mask = LVIF_TEXT; it.iItem = (int)i; it.pszText = &n[0]; ListView_InsertItem(g_queue, &it);
         ListView_SetItemText(g_queue, (int)i, 1, &s[0]); std::wstring pc = std::to_wstring(g_jobs[i].percent) + L" %"; ListView_SetItemText(g_queue, (int)i, 2, &pc[0]);
+        std::wstring pr = W(g_jobs[i].params); ListView_SetItemText(g_queue, (int)i, 3, &pr[0]);
     }
     const int vis = (!g_jobs.empty() && g_queueOpen) ? SW_SHOW : SW_HIDE; ShowWindow(g_queue, vis); ShowWindow(g_qTitle, vis); ShowWindow(g_qClear, vis); ShowWindow(g_qClose, vis); layout();
 }
@@ -422,7 +429,9 @@ static void cmdConvert() {
     if (im->randomSeed) im->seed = (int)(GetTickCount() & 0x7FFFFFFF);
     JobReq r; r.title = im->title; r.image = im->path; r.cancel = std::make_shared<std::atomic<bool>>(false);
     r.p.seed = (unsigned)im->seed; r.p.steps = im->steps; r.p.cfg = im->cfg; r.p.resolution = im->resolution; r.p.threshold = im->threshold; r.p.checkpoint = hunyuanModelPath();
-    Job j; { std::lock_guard<std::mutex> g(g_jobMx); r.id = j.id = g_nextJob++; j.name = "Image to 3D: " + im->title + "  (seed " + std::to_string(im->seed) + ")"; j.state = "Waiting"; g_jobs.push_back(j); g_cancels[r.id] = r.cancel; g_pendingJobs.push_back(r); if (!g_workerBusy) { g_workerBusy = true; std::thread(jobWorker).detach(); } }
+    Job j; { std::lock_guard<std::mutex> g(g_jobMx); r.id = j.id = g_nextJob++; j.name = "Image to 3D: " + im->title + "  (seed " + std::to_string(im->seed) + ")"; j.state = "Waiting";
+        { char pb[200]; snprintf(pb, sizeof pb, "seed %d,  %d steps,  CFG %.1f,  voxel resolution %d,  surface threshold %.2f", im->seed, im->steps, im->cfg, im->resolution, im->threshold); j.params = pb; }
+        g_jobs.push_back(j); g_cancels[r.id] = r.cancel; g_pendingJobs.push_back(r); if (!g_workerBusy) { g_workerBusy = true; std::thread(jobWorker).detach(); } }
     g_queueOpen = true; refreshQueue(); updateStatus();
 }
 static void jobUpdate(JobUpdate* u) {
@@ -534,7 +543,7 @@ static void createChildren() {
     // queue
     g_queue = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"", WS_CHILD | LVS_REPORT | LVS_SINGLESEL | LVS_NOSORTHEADER, 0, 0, 10, 10, g_main, (HMENU)IDC_QUEUE, g_inst, nullptr); SendMessageW(g_queue, WM_SETFONT, (WPARAM)g_font, TRUE);
     ListView_SetExtendedListViewStyle(g_queue, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
-    { const wchar_t* c[] = {L"Job", L"State", L"Progress"}; const int w[] = {320, 560, 80}; for (int i = 0; i < 3; i++) { LVCOLUMNW col = {}; col.mask = LVCF_TEXT | LVCF_WIDTH; col.pszText = (LPWSTR)c[i]; col.cx = w[i]; ListView_InsertColumn(g_queue, i, &col); } }
+    { const wchar_t* c[] = {L"Job", L"State", L"Progress", L"Parameters"}; const int w[] = {300, 520, 70, 460}; for (int i = 0; i < 4; i++) { LVCOLUMNW col = {}; col.mask = LVCF_TEXT | LVCF_WIDTH; col.pszText = (LPWSTR)c[i]; col.cx = w[i]; ListView_InsertColumn(g_queue, i, &col); } }
     g_qTitle = mk(g_main, L"STATIC", L"  Job queue   (double-click a running job to cancel it)", SS_LEFT | SS_CENTERIMAGE, 0);
     g_qClear = mk(g_main, L"BUTTON", L"Clear finished", BS_PUSHBUTTON | WS_TABSTOP, IDC_QCLEAR); g_qClose = mk(g_main, L"BUTTON", L"", BS_OWNERDRAW | WS_TABSTOP, IDC_QCLOSE);
     { HWND tip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, g_main, nullptr, g_inst, nullptr);
@@ -683,6 +692,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int show) {
     HACCEL acc; { ACCEL a[] = {{FCONTROL | FVIRTKEY, 'O', IDM_OPEN}, {FCONTROL | FVIRTKEY, 'S', IDM_SAVE}, {FCONTROL | FVIRTKEY, 'Z', IDM_UNDO}, {FCONTROL | FVIRTKEY, 'Y', IDM_REDO}, {FCONTROL | FVIRTKEY, 'W', IDM_CLOSE}}; acc = CreateAcceleratorTableW(a, 5); }
     MSG msg; while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
         if (msg.message == WM_KEYDOWN && (msg.wParam == 'P' || msg.wParam == 'H') && GetFocus() != P.ed[0] && GetFocus() != P.ed[1] && GetFocus() != P.ed[2] && !(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_SHIFT) & 0x8000) && (GetFocus() == g_view || GetFocus() == g_main || GetFocus() == g_tab)) { PostMessageW(g_main, WM_COMMAND, msg.wParam == 'H' ? IDM_HIDE : IDM_PREVIEW, 0); continue; }
+        if (msg.message == WM_KEYDOWN && !typingFocus() && !(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000)) {
+            if (msg.wParam == VK_PRIOR) { switchTab(-1); continue; }                                        // Page Up / Page Down: the tabs
+            if (msg.wParam == VK_NEXT) { switchTab(1); continue; }
+            if (viewKey((unsigned)msg.wParam, (GetKeyState(VK_SHIFT) & 0x8000) != 0)) continue;           // arrows, numpad 4 6 8 2 5, Home, End
+        }
         if (!TranslateAcceleratorW(g_main, acc, &msg)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
     }
     return 0;

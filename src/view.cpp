@@ -381,6 +381,26 @@ LRESULT CALLBACK viewProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
 }  // namespace
 
 void setUniformScale(bool on) { g_uniformScale = on; }
+bool viewKey(unsigned vk, bool shift) {
+    ModelDoc* d = activeModel(); if (!d) return false; Camera& c = d->cam; const float step = shift ? 15.0f : 5.0f;
+    Cam k = camOf(c); const float pan = c.dist * std::tan(rad(kFov) * 0.5f) * 2.0f * (shift ? 0.12f : 0.04f);                // a few percent of what is on the screen
+    switch (vk) {
+    case VK_LEFT:  c.yaw += step; break;                                                                         // arrows: the camera goes round the object
+    case VK_RIGHT: c.yaw -= step; break;
+    case VK_UP:    c.pitch = std::min(89.5f, c.pitch + step); break;
+    case VK_DOWN:  c.pitch = std::max(-89.5f, c.pitch - step); break;
+    case VK_NUMPAD4: c.target = c.target - k.right * pan; break;                                                 // numpad: pan
+    case VK_NUMPAD6: c.target = c.target + k.right * pan; break;
+    case VK_NUMPAD8: c.target = c.target + k.up * pan; break;
+    case VK_NUMPAD2: c.target = c.target - k.up * pan; break;
+    case VK_NUMPAD5: case VK_CLEAR: d->fitCamera(); break;                                                       // numpad 5 (CLEAR when Num Lock is off): back to the centre
+    case VK_HOME: c.dist = std::min(d->diag() * 80, std::max(d->diag() * 0.03f, c.dist * (shift ? 0.6f : 0.85f))); break;   // zoom in
+    case VK_END:  c.dist = std::min(d->diag() * 80, std::max(d->diag() * 0.03f, c.dist / (shift ? 0.6f : 0.85f))); break;   // zoom out
+    default: return false;
+    }
+    if (g_view) InvalidateRect(g_view, nullptr, FALSE);
+    return true;
+}
 void viewSetBrush(int px) { g_brushPx = (float)std::min(400, std::max(3, px)); }
 int viewBrush() { return (int)g_brushPx; }
 

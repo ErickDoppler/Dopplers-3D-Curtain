@@ -62,6 +62,7 @@ void viewRedraw();
 bool viewSnapshot(const std::string& path);
 void viewSetBrush(int px);                              // eraser brush radius in pixels
 int viewBrush();
+bool viewKey(unsigned vk, bool shift);                    // keyboard: arrows rotate, numpad 4 6 8 2 pan, numpad 5 centres, Home / End zoom; true when the key was used
 void viewSetPreset(const char* name);                 // "front", "back", "left", "right", "top", "bottom", "center"
 
 // ---- hooks implemented by the main window (main.cpp)
