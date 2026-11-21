@@ -460,7 +460,7 @@ static void cmdConvert() {
     g_queueOpen = true; refreshQueue(); updateStatus();
 }
 static void jobUpdate(JobUpdate* u) {
-    { std::lock_guard<std::mutex> g(g_jobMx); for (auto& j : g_jobs) if (j.id == u->id) { j.state = u->state; j.percent = u->percent; } }
+    { std::lock_guard<std::mutex> g(g_jobMx); for (auto& j : g_jobs) if (j.id == u->id) { if (j.state != "Stopping...") j.state = u->state; j.percent = u->percent; } }   // a job that was told to stop keeps saying so until it ends
     delete u; refreshQueue();
 }
 static void jobDone(JobDone* d) {
@@ -472,10 +472,15 @@ static void jobDone(JobDone* d) {
 }
 static void enqueueRequest(const JobReq& r) { g_pendingJobs.push_back(r); if (!g_workerBusy) { g_workerBusy = true; std::thread(jobWorker).detach(); } }
 static bool jobActive(const Job& j) { return j.state == "Waiting" || (j.state.rfind("Done", 0) && j.state.rfind("Failed", 0) && j.state != "Cancelled"); }
+static int jobButtons(const Job& j) {                                                                       // bit 0 stop, bit 1 trash bin, bit 2 repeat
+    if (!jobActive(j)) return 2 | 4;                                                                         // finished: delete or run again
+    if (j.state == "Waiting" || j.state == "Stopping...") return 2;                                          // waiting or on its way out: only delete
+    return 1 | 2;                                                                                            // running: stop or delete
+}
 static void jobAction(int row, int which) {                                                                 // 0 cancel, 1 cancel and delete, 2 run again
     std::lock_guard<std::mutex> g(g_jobMx); if (row < 0 || row >= (int)g_jobs.size()) return; Job j = g_jobs[row];
     if (which == 0 || which == 1) {
-        if (jobActive(j)) { auto it = g_cancels.find(j.id); if (it != g_cancels.end()) *it->second = true; if (which == 0) g_jobs[row].state = "Cancelling..."; }
+        if (jobActive(j)) { auto it = g_cancels.find(j.id); if (it != g_cancels.end()) *it->second = true; if (which == 0) g_jobs[row].state = "Stopping..."; }
         if (which == 1) g_jobs.erase(g_jobs.begin() + row);
     } else {
         JobReq r; r.id = g_nextJob++; r.image = j.image; r.title = j.title; r.p = j.p; r.cancel = std::make_shared<std::atomic<bool>>(false);
@@ -634,9 +639,9 @@ static LRESULT CALLBACK mainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         else if (n->hwndFrom == g_queue && n->code == NM_CLICK) {
             NMITEMACTIVATE* a = (NMITEMACTIVATE*)lp; LVHITTESTINFO hi = {}; hi.pt = a->ptAction; ListView_SubItemHitTest(g_queue, &hi);
             if (hi.iItem >= 0 && hi.iSubItem == kActCol) {
-                RECT r; ListView_GetSubItemRect(g_queue, hi.iItem, kActCol, LVIR_BOUNDS, &r); const int k = (hi.pt.x - r.left - 4) / 22; bool active = false;
-                { std::lock_guard<std::mutex> g(g_jobMx); if (hi.iItem < (int)g_jobs.size()) active = jobActive(g_jobs[hi.iItem]); }
-                if (k >= 0 && k < 3 && (k != 0 || active)) { jobAction(hi.iItem, k); refreshQueue(); }          // no stop button on a finished job
+                RECT r; ListView_GetSubItemRect(g_queue, hi.iItem, kActCol, LVIR_BOUNDS, &r); const int k = (hi.pt.x - r.left - 4) / 22; int btn = 0;
+                { std::lock_guard<std::mutex> g(g_jobMx); if (hi.iItem < (int)g_jobs.size()) btn = jobButtons(g_jobs[hi.iItem]); }
+                if (k >= 0 && k < 3 && (btn & (1 << k))) { jobAction(hi.iItem, k); refreshQueue(); }             // only the buttons that are shown react
             }
         }
         else if (n->hwndFrom == g_queue && n->code == NM_CUSTOMDRAW) {
@@ -644,13 +649,13 @@ static LRESULT CALLBACK mainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
             if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) return CDRF_NOTIFYSUBITEMDRAW;
             if (cd->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT | CDDS_SUBITEM) && cd->iSubItem == kActCol) {
-                RECT r; ListView_GetSubItemRect(g_queue, (int)cd->nmcd.dwItemSpec, kActCol, LVIR_BOUNDS, &r); bool active = false;
-                { std::lock_guard<std::mutex> g(g_jobMx); if (cd->nmcd.dwItemSpec < g_jobs.size()) active = jobActive(g_jobs[cd->nmcd.dwItemSpec]); }
+                RECT r; ListView_GetSubItemRect(g_queue, (int)cd->nmcd.dwItemSpec, kActCol, LVIR_BOUNDS, &r); int btn = 0;
+                { std::lock_guard<std::mutex> g(g_jobMx); if (cd->nmcd.dwItemSpec < g_jobs.size()) btn = jobButtons(g_jobs[cd->nmcd.dwItemSpec]); }
                 HDC dc = cd->nmcd.hdc; HBRUSH bg = CreateSolidBrush(RGB(255, 255, 255)); FillRect(dc, &r, bg); DeleteObject(bg);
                 BITMAPINFO bi = {}; bi.bmiHeader.biSize = sizeof bi.bmiHeader; bi.bmiHeader.biWidth = kQIconSize; bi.bmiHeader.biHeight = -kQIconSize; bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
                 const int top = r.top + ((r.bottom - r.top) - kQIconSize) / 2;
                 for (int k = 0; k < 3; k++) {
-                    if (k == 0 && !active) continue;                                                              // a finished job has no stop button
+                    if (!(btn & (1 << k))) continue;                                                              // waiting: only delete; running: stop and delete; stopping: delete; finished: delete and repeat
                     StretchDIBits(dc, r.left + 4 + k * 22, top, kQIconSize, kQIconSize, 0, 0, kQIconSize, kQIconSize, kQIcons[k], &bi, DIB_RGB_COLORS, SRCCOPY);   // icons from tools/makebtn.cpp
                 }
                 return CDRF_SKIPDEFAULT;
