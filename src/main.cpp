@@ -4,6 +4,7 @@
 #include <commdlg.h>
 #include <shellapi.h>
 #include <wincodec.h>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -15,6 +16,7 @@
 #include "h3d/pipeline.h"
 #include "ids.h"
 #include "project.h"
+#include "qicons.h"
 #include "toolbar.h"
 #include "sys.h"
 
@@ -578,8 +580,8 @@ static void createChildren() {
     // queue
     g_queue = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"", WS_CHILD | LVS_REPORT | LVS_SINGLESEL | LVS_NOSORTHEADER, 0, 0, 10, 10, g_main, (HMENU)IDC_QUEUE, g_inst, nullptr); SendMessageW(g_queue, WM_SETFONT, (WPARAM)g_font, TRUE);
     ListView_SetExtendedListViewStyle(g_queue, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
-    { const wchar_t* c[] = {L"Job", L"State", L"Progress", L"Parameters", L"Actions"}; const int w[] = {280, 440, 70, 400, 210}; for (int i = 0; i < 5; i++) { LVCOLUMNW col = {}; col.mask = LVCF_TEXT | LVCF_WIDTH; col.pszText = (LPWSTR)c[i]; col.cx = w[i]; ListView_InsertColumn(g_queue, i, &col); } }
-    g_qTitle = mk(g_main, L"STATIC", L"  Job queue   (Cancel stops a job, Delete stops and removes it, Re-run queues it again; drag the bar above to resize)", SS_LEFT | SS_CENTERIMAGE, 0);
+    { const wchar_t* c[] = {L"Job", L"State", L"Progress", L"Parameters", L"Actions"}; const int w[] = {280, 460, 70, 440, 120}; for (int i = 0; i < 5; i++) { LVCOLUMNW col = {}; col.mask = LVCF_TEXT | LVCF_WIDTH; col.pszText = (LPWSTR)c[i]; col.cx = w[i]; ListView_InsertColumn(g_queue, i, &col); } }
+    g_qTitle = mk(g_main, L"STATIC", L"  Job queue   (stop, trash bin = stop and remove, repeat = queue again; drag the bar above to resize)", SS_LEFT | SS_CENTERIMAGE, 0);
     g_qClear = mk(g_main, L"BUTTON", L"Clear finished", BS_PUSHBUTTON | WS_TABSTOP, IDC_QCLEAR); g_qClose = mk(g_main, L"BUTTON", L"", BS_OWNERDRAW | WS_TABSTOP, IDC_QCLOSE);
     { HWND tip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, g_main, nullptr, g_inst, nullptr);
       TOOLINFOW ti = {sizeof ti}; ti.uFlags = TTF_SUBCLASS | TTF_IDISHWND; ti.hwnd = g_main; ti.uId = (UINT_PTR)g_qClose; ti.lpszText = (LPWSTR)L"Close the job queue (File > Job queue shows it again; running jobs go on)";
@@ -630,8 +632,12 @@ static LRESULT CALLBACK mainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         if (n->hwndFrom == g_tab && n->code == TCN_SELCHANGE) { g_active = TabCtrl_GetCurSel(g_tab); showActive(); }
         else if (n->hwndFrom == g_tab && n->code == NM_CLICK) { POINT pt; GetCursorPos(&pt); ScreenToClient(g_tab, &pt); const int i = tabAt(pt); if (onTabCross(i, pt)) closeDoc(i); }
         else if (n->hwndFrom == g_queue && n->code == NM_CLICK) {
-            NMITEMACTIVATE* a = (NMITEMACTIVATE*)lp; LVHITTESTINFO hi = {}; hi.pt = a->ptAction; ListView_SubItemHitTest(g_queue, &hi); { FILE* lf = fopen("C:/Users/Administrator/AppData/Local/Temp/q.log", "a"); if (lf) { fprintf(lf, "click %ld %ld item %d sub %d\n", hi.pt.x, hi.pt.y, hi.iItem, hi.iSubItem); fclose(lf); } }
-            if (hi.iItem >= 0 && hi.iSubItem == kActCol) { RECT r; ListView_GetSubItemRect(g_queue, hi.iItem, kActCol, LVIR_BOUNDS, &r); const int k = (hi.pt.x - r.left - 4) / 66; if (k >= 0 && k < 3) { jobAction(hi.iItem, k); refreshQueue(); } }
+            NMITEMACTIVATE* a = (NMITEMACTIVATE*)lp; LVHITTESTINFO hi = {}; hi.pt = a->ptAction; ListView_SubItemHitTest(g_queue, &hi);
+            if (hi.iItem >= 0 && hi.iSubItem == kActCol) {
+                RECT r; ListView_GetSubItemRect(g_queue, hi.iItem, kActCol, LVIR_BOUNDS, &r); const int k = (hi.pt.x - r.left - 4) / 22; bool active = false;
+                { std::lock_guard<std::mutex> g(g_jobMx); if (hi.iItem < (int)g_jobs.size()) active = jobActive(g_jobs[hi.iItem]); }
+                if (k >= 0 && k < 3 && (k != 0 || active)) { jobAction(hi.iItem, k); refreshQueue(); }          // no stop button on a finished job
+            }
         }
         else if (n->hwndFrom == g_queue && n->code == NM_CUSTOMDRAW) {
             NMLVCUSTOMDRAW* cd = (NMLVCUSTOMDRAW*)lp;
@@ -640,13 +646,14 @@ static LRESULT CALLBACK mainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             if (cd->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT | CDDS_SUBITEM) && cd->iSubItem == kActCol) {
                 RECT r; ListView_GetSubItemRect(g_queue, (int)cd->nmcd.dwItemSpec, kActCol, LVIR_BOUNDS, &r); bool active = false;
                 { std::lock_guard<std::mutex> g(g_jobMx); if (cd->nmcd.dwItemSpec < g_jobs.size()) active = jobActive(g_jobs[cd->nmcd.dwItemSpec]); }
-                static const wchar_t* lab[3] = {L"Cancel", L"Delete", L"Re-run"}; const COLORREF col[3] = {RGB(205, 140, 30), RGB(200, 50, 50), RGB(50, 150, 80)};
-                HDC dc = cd->nmcd.hdc; HGDIOBJ of = SelectObject(dc, g_font); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255, 255, 255));
+                HDC dc = cd->nmcd.hdc; HBRUSH bg = CreateSolidBrush(RGB(255, 255, 255)); FillRect(dc, &r, bg); DeleteObject(bg);
+                BITMAPINFO bi = {}; bi.bmiHeader.biSize = sizeof bi.bmiHeader; bi.bmiHeader.biWidth = kQIconSize; bi.bmiHeader.biHeight = -kQIconSize; bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
+                const int top = r.top + ((r.bottom - r.top) - kQIconSize) / 2;
                 for (int k = 0; k < 3; k++) {
-                    RECT b = {r.left + 4 + k * 66, r.top + 2, r.left + 4 + k * 66 + 62, r.bottom - 2}; const bool on = k != 0 || active;
-                    HBRUSH br = CreateSolidBrush(on ? col[k] : RGB(110, 110, 110)); FillRect(dc, &b, br); DeleteObject(br); DrawTextW(dc, lab[k], -1, &b, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    if (k == 0 && !active) continue;                                                              // a finished job has no stop button
+                    StretchDIBits(dc, r.left + 4 + k * 22, top, kQIconSize, kQIconSize, 0, 0, kQIconSize, kQIconSize, kQIcons[k], &bi, DIB_RGB_COLORS, SRCCOPY);   // icons from tools/makebtn.cpp
                 }
-                SelectObject(dc, of); return CDRF_SKIPDEFAULT;
+                return CDRF_SKIPDEFAULT;
             }
             return CDRF_DODEFAULT;
         }
