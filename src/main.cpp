@@ -330,8 +330,8 @@ static bool fileDialog(bool save, const wchar_t* filter, const wchar_t* defExt, 
     path = sys::narrow(buf); if (filterIndex) *filterIndex = (int)o.nFilterIndex; return true;
 }
 // the formats the object can be written in (the order of the filter list)
-static const wchar_t* kMeshFilter = L"STL - 3D printing (*.stl)\0*.stl\0Wavefront OBJ (*.obj)\0*.obj\0STEP - CAD solid (*.step;*.stp)\0*.step;*.stp\0glTF binary (*.glb)\0*.glb\0glTF with a .bin file (*.gltf)\0*.gltf\0PLY (*.ply)\0*.ply\03MF - 3D printing (*.3mf)\0*.3mf\0OFF (*.off)\0*.off\0";
-static const wchar_t* kSaveFilter = L"Curtain project (*.curtain)\0*.curtain\0STL - 3D printing (*.stl)\0*.stl\0Wavefront OBJ (*.obj)\0*.obj\0STEP - CAD solid (*.step;*.stp)\0*.step;*.stp\0glTF binary (*.glb)\0*.glb\0glTF with a .bin file (*.gltf)\0*.gltf\0PLY (*.ply)\0*.ply\03MF - 3D printing (*.3mf)\0*.3mf\0OFF (*.off)\0*.off\0";
+static const wchar_t* kMeshFilter = L"STL - 3D printing (*.stl)\0*.stl\0Wavefront OBJ (*.obj)\0*.obj\0STEP - CAD solid (*.step;*.stp)\0*.step;*.stp\0glTF binary (*.glb)\0*.glb\0glTF with a .bin file (*.gltf)\0*.gltf\0PLY (*.ply)\0*.ply\0" L"3MF - 3D printing (*.3mf)\0*.3mf\0OFF (*.off)\0*.off\0";
+static const wchar_t* kSaveFilter = L"Curtain project (*.curtain)\0*.curtain\0STL - 3D printing (*.stl)\0*.stl\0Wavefront OBJ (*.obj)\0*.obj\0STEP - CAD solid (*.step;*.stp)\0*.step;*.stp\0glTF binary (*.glb)\0*.glb\0glTF with a .bin file (*.gltf)\0*.gltf\0PLY (*.ply)\0*.ply\0" L"3MF - 3D printing (*.3mf)\0*.3mf\0OFF (*.off)\0*.off\0";
 static const char* kMeshExt[] = {"stl", "obj", "step", "glb", "gltf", "ply", "3mf", "off"};
 static bool isMeshExt(const std::string& e) { for (const char* x : kMeshExt) if (e == x) return true; return e == "stp"; }
 static bool pickMeshPath(const std::string& base, std::string& p) {
@@ -375,7 +375,7 @@ static bool loadCurtainFile(const std::string& path, std::unique_ptr<ModelDoc>& 
 // ---- exports
 static std::string identOf(const std::string& title) { std::string s = "curtain_"; for (char c : withExt(title, "")) s.push_back(isalnum((unsigned char)c) ? (char)tolower((unsigned char)c) : '_'); while (!s.empty() && s.back() == '_') s.pop_back(); return s; }
 static void cmdExport(int id) {
-    ModelDoc* d = activeModel(); if (!d || !d->cur.mesh) return; std::string p, err; const std::string base = withExt(d->title, "");
+    ModelDoc* d = activeModel(); if (!d || !d->cur.mesh) return; std::string p, err; std::string base = withExt(d->title, ""); if (!base.empty() && base.back() == '.') base.pop_back();
     if (id == IDM_EXP_OBJ || id == IDM_EXP_GLB) {                                                  // the edited object, in any model format
         if (!pickMeshPath(base, p)) return;
         if (!saveMeshAny(p, d->world, d->cur.mesh->idx, err)) msg(err, MB_ICONERROR); else setStatusText("Saved the object as " + baseName(p));
@@ -497,12 +497,12 @@ static void layout() {
 }
 
 static HMENU buildMenu() {
-    HMENU bar = CreateMenu(), file = CreatePopupMenu(), exp = CreatePopupMenu(), edit = CreatePopupMenu(), model = CreatePopupMenu(), help = CreatePopupMenu();
+    HMENU bar = CreateMenu(), file = CreatePopupMenu(), exp = CreatePopupMenu(), expObj = CreatePopupMenu(), edit = CreatePopupMenu(), model = CreatePopupMenu(), help = CreatePopupMenu();
     AppendMenuW(file, MF_STRING, IDM_OPEN, L"&Open...\tCtrl+O"); AppendMenuW(file, MF_STRING, IDM_SAVE, L"&Save\tCtrl+S"); AppendMenuW(file, MF_STRING, IDM_SAVEAS, L"Save &As...");
-    AppendMenuW(exp, MF_STRING, IDM_EXP_HEADER, L"Curtain for the engine - C++ header (.h)..."); AppendMenuW(exp, MF_STRING, IDM_EXP_BLOB, L"Curtain for the engine - binary field (.cvf)...");
-    AppendMenuW(exp, MF_STRING, IDM_EXP_CURTAIN_OBJ, L"Curtain surface - STL, OBJ, STEP, GLB, ...  (the wrap as a mesh)..."); AppendMenuW(exp, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(exp, MF_STRING, IDM_EXP_OBJ, L"Object - STL, OBJ, STEP, GLB, glTF, PLY, 3MF, OFF...");
-    AppendMenuW(file, MF_POPUP, (UINT_PTR)exp, L"&Export"); AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(exp, MF_STRING, IDM_EXP_HEADER, L"To code - C++ header (.h)..."); AppendMenuW(exp, MF_STRING, IDM_EXP_BLOB, L"To code - binary field (.cvf)...");
+    AppendMenuW(exp, MF_STRING, IDM_EXP_CURTAIN_OBJ, L"As a model - STL, OBJ, STEP, GLB, glTF, PLY, 3MF, OFF...");
+    AppendMenuW(expObj, MF_STRING, IDM_EXP_OBJ, L"As a model - STL, OBJ, STEP, GLB, glTF, PLY, 3MF, OFF...");
+    AppendMenuW(file, MF_POPUP, (UINT_PTR)exp, L"Export &Curtain"); AppendMenuW(file, MF_POPUP, (UINT_PTR)expObj, L"Export &Object"); AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_DOWNLOAD, L"&Download models and CUDA libraries..."); AppendMenuW(file, MF_STRING, IDM_QUEUE, L"Job &queue (show / hide)"); AppendMenuW(file, MF_STRING, IDM_CLOSE, L"&Close tab\tCtrl+W"); AppendMenuW(file, MF_STRING, IDM_EXIT, L"E&xit");
     AppendMenuW(edit, MF_STRING, IDM_UNDO, L"&Undo\tCtrl+Z"); AppendMenuW(edit, MF_STRING, IDM_REDO, L"&Redo\tCtrl+Y");
     AppendMenuW(model, MF_STRING, IDM_CENTER, L"&Center on the plate"); AppendMenuW(model, MF_STRING, IDM_RESET, L"&Reset size, rotation and position"); AppendMenuW(model, MF_SEPARATOR, 0, nullptr);
