@@ -24,6 +24,7 @@ void setUniformScale(bool on);
 namespace {
 const UINT WM_CURTAIN_DONE = WM_APP + 10, WM_JOB_UPDATE = WM_APP + 11, WM_JOB_DONE = WM_APP + 12;
 const int TIMER_CURTAIN = 1;
+static const int IDM_FMT_OBJ = 1600, IDM_FMT_CUR = 1620;                                                      // one menu item per format: 1600 + i exports the object, 1620 + i the curtain surface
 
 HINSTANCE g_inst; HWND g_main, g_tab, g_toolbar, g_status, g_view, g_panel, g_welcome, g_queue, g_imgPanel;
 HFONT g_font, g_bold;
@@ -111,6 +112,7 @@ static void refreshCommands() {
     for (int id : {IDM_SAVE, IDM_SAVEAS}) toolbarEnable(id, can);
     for (int id : {IDT_DISTANCE, IDT_PRECISION, IDT_DENSITY, IDT_SCALE, IDT_ROTATE, IDT_MOVE, IDT_DETAILS, IDT_ERASER}) toolbarEnable(id, can);
     EnableMenuItem(m, IDM_UNDO, MF_BYCOMMAND | (un ? MF_ENABLED : MF_GRAYED)); EnableMenuItem(m, IDM_REDO, MF_BYCOMMAND | (re ? MF_ENABLED : MF_GRAYED));
+    for (int i = 0; i < 8; i++) { EnableMenuItem(m, IDM_FMT_OBJ + i, MF_BYCOMMAND | (can ? MF_ENABLED : MF_GRAYED)); EnableMenuItem(m, IDM_FMT_CUR + i, MF_BYCOMMAND | (can ? MF_ENABLED : MF_GRAYED)); }
     for (int id : {IDM_SAVE, IDM_SAVEAS, IDM_EXP_HEADER, IDM_EXP_BLOB, IDM_EXP_CURTAIN_OBJ, IDM_EXP_OBJ, IDM_EXP_GLB, IDM_CENTER, IDM_RESET, IDM_MODE_SMOOTH, IDM_MODE_HULL, IDM_VERTICES, IDM_PREVIEW, IDM_HIDE})
         EnableMenuItem(m, id, MF_BYCOMMAND | (can ? MF_ENABLED : MF_GRAYED));
     CheckMenuItem(m, IDM_MODE_SMOOTH, MF_BYCOMMAND | ((can && d->cur.cp.mode == CurtainMode::Smooth) ? MF_CHECKED : MF_UNCHECKED));
@@ -339,6 +341,17 @@ static bool pickMeshPath(const std::string& base, std::string& p) {
     if (!isMeshExt(extOf(p))) p += std::string(".") + kMeshExt[std::max(0, std::min(7, fi - 1))];
     return true;
 }
+static const wchar_t* kFmtName[] = {L"STL - 3D printing", L"Wavefront OBJ", L"STEP - CAD solid", L"glTF binary", L"glTF with a .bin file", L"PLY", L"3MF - 3D printing", L"OFF"};
+static void exportFormat(bool curtain, int fi) {
+    ModelDoc* d = activeModel(); if (!d || !d->cur.mesh || fi < 0 || fi > 7) return;
+    std::string base = withExt(d->title, ""); if (!base.empty() && base.back() == '.') base.pop_back(); if (curtain) base += "_curtain";
+    const std::string ext = kMeshExt[fi]; std::wstring flt = std::wstring(kFmtName[fi]) + L" (*." + W(ext) + (fi == 2 ? L";*.stp)" : L")"); flt.push_back(L'\0'); flt += L"*." + W(ext); if (fi == 2) flt += L";*.stp"; flt.push_back(L'\0');
+    std::string p, err; if (!fileDialog(true, flt.c_str(), W(ext).c_str(), p, base + "." + ext)) return;     // the dialog lists only this format and adds its extension
+    if (extOf(p).empty()) p += "." + ext;
+    if (curtain) { ensureCurtainNow(d); if (!d->curtain) { msg("The curtain could not be computed."); return; }
+        if (!saveMeshAny(p, d->curtain->v, d->curtain->idx, err)) msg(err, MB_ICONERROR); else setStatusText("Saved the curtain surface as " + baseName(p)); }
+    else if (!saveMeshAny(p, d->world, d->cur.mesh->idx, err)) msg(err, MB_ICONERROR); else setStatusText("Saved the object as " + baseName(p));
+}
 static void cmdOpen() {
     std::string p; if (fileDialog(false, L"3D models and images\0*.obj;*.stl;*.ply;*.off;*.gltf;*.glb;*.step;*.stp;*.curtain;*.png;*.jpg;*.jpeg;*.bmp\0Curtain projects\0*.curtain\0All files\0*.*\0", nullptr, p)) openPath(p);
 }
@@ -500,8 +513,8 @@ static HMENU buildMenu() {
     HMENU bar = CreateMenu(), file = CreatePopupMenu(), exp = CreatePopupMenu(), expObj = CreatePopupMenu(), edit = CreatePopupMenu(), model = CreatePopupMenu(), help = CreatePopupMenu();
     AppendMenuW(file, MF_STRING, IDM_OPEN, L"&Open...\tCtrl+O"); AppendMenuW(file, MF_STRING, IDM_SAVE, L"&Save\tCtrl+S"); AppendMenuW(file, MF_STRING, IDM_SAVEAS, L"Save &As...");
     AppendMenuW(exp, MF_STRING, IDM_EXP_HEADER, L"To code - C++ header (.h)..."); AppendMenuW(exp, MF_STRING, IDM_EXP_BLOB, L"To code - binary field (.cvf)...");
-    AppendMenuW(exp, MF_STRING, IDM_EXP_CURTAIN_OBJ, L"As a model - STL, OBJ, STEP, GLB, glTF, PLY, 3MF, OFF...");
-    AppendMenuW(expObj, MF_STRING, IDM_EXP_OBJ, L"As a model - STL, OBJ, STEP, GLB, glTF, PLY, 3MF, OFF...");
+    AppendMenuW(exp, MF_SEPARATOR, 0, nullptr);
+    for (int i = 0; i < 8; i++) { std::wstring a = L"As " + std::wstring(kFmtName[i]) + L" (." + W(kMeshExt[i]) + L")..."; AppendMenuW(exp, MF_STRING, IDM_FMT_CUR + i, a.c_str()); a = L"As " + std::wstring(kFmtName[i]) + L" (." + W(kMeshExt[i]) + L")..."; AppendMenuW(expObj, MF_STRING, IDM_FMT_OBJ + i, a.c_str()); }
     AppendMenuW(file, MF_POPUP, (UINT_PTR)exp, L"Export &Curtain"); AppendMenuW(file, MF_POPUP, (UINT_PTR)expObj, L"Export &Object"); AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_DOWNLOAD, L"&Download models and CUDA libraries..."); AppendMenuW(file, MF_STRING, IDM_QUEUE, L"Job &queue (show / hide)"); AppendMenuW(file, MF_STRING, IDM_CLOSE, L"&Close tab\tCtrl+W"); AppendMenuW(file, MF_STRING, IDM_EXIT, L"E&xit");
     AppendMenuW(edit, MF_STRING, IDM_UNDO, L"&Undo\tCtrl+Z"); AppendMenuW(edit, MF_STRING, IDM_REDO, L"&Redo\tCtrl+Y");
@@ -626,6 +639,8 @@ static LRESULT CALLBACK mainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     }
     case WM_COMMAND: {
         const int id = LOWORD(wp), code = HIWORD(wp);
+        if (id >= IDM_FMT_OBJ && id < IDM_FMT_OBJ + 8) { exportFormat(false, id - IDM_FMT_OBJ); return 0; }
+        if (id >= IDM_FMT_CUR && id < IDM_FMT_CUR + 8) { exportFormat(true, id - IDM_FMT_CUR); return 0; }
         if (id >= IDC_VIEWBASE && id < IDC_VIEWBASE + 7) { static const char* names[] = {"center", "left", "right", "front", "back", "top", "bottom"}; viewSetPreset(names[id - IDC_VIEWBASE]); return 0; }
         if (id >= IDC_ROWBASE && id < IDC_ROWBASE + 9 && (id - IDC_ROWBASE) % 3 == 2 && code == EN_KILLFOCUS && !g_syncing) {
             int r = (id - IDC_ROWBASE) / 3; wchar_t b[64]; GetWindowTextW(P.ed[r], b, 64); double v = _wtof(b);
