@@ -1,0 +1,11 @@
+build/
+dist/
+release/
+models/
+output/
+*.log
+*.o
+*.exe
+*.part
+settings.ini
+build_test/
