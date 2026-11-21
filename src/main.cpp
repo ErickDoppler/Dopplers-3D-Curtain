@@ -100,7 +100,7 @@ static void updateStatus() {
 static void refreshTabs() {
     TabCtrl_DeleteAllItems(g_tab);
     for (size_t i = 0; i < g_docs.size(); i++) {
-        std::wstring t = W(g_docs[i]->title + (g_docs[i]->dirty ? " *" : "")); TCITEMW it = {}; it.mask = TCIF_TEXT; it.pszText = &t[0]; TabCtrl_InsertItem(g_tab, (int)i, &it);
+        std::wstring t = W(g_docs[i]->title + (g_docs[i]->dirty ? " *" : "")) + L"   \x00D7"; TCITEMW it = {}; it.mask = TCIF_TEXT; it.pszText = &t[0]; TabCtrl_InsertItem(g_tab, (int)i, &it);
     }
     if (g_active >= 0) TabCtrl_SetCurSel(g_tab, g_active);
 }
@@ -352,12 +352,15 @@ static void cmdSaveAs() {
     }
     if (saveCurtainFile(d, p)) { d->path = p; d->title = baseName(p); d->dirty = false; refreshTabs(); }
 }static void cmdSave() { ModelDoc* d = activeModel(); if (!d) return; if (d->path.empty() || extOf(d->path) != "curtain") { cmdSaveAs(); return; } if (saveCurtainFile(d, d->path)) { d->dirty = false; refreshTabs(); } }
-static void cmdClose() {
-    if (g_active < 0) return; Doc* d = g_docs[g_active].get();
+static void closeDoc(int i) {
+    if (i < 0 || i >= (int)g_docs.size()) return; Doc* d = g_docs[i].get();
     if (d->dirty && MessageBoxW(g_main, W("Close " + d->title + " without saving?").c_str(), L"Doppler's 3D Curtain", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
-    g_docs.erase(g_docs.begin() + g_active); if (g_active >= (int)g_docs.size()) g_active = (int)g_docs.size() - 1;
+    g_docs.erase(g_docs.begin() + i); if (i < g_active) g_active--; if (g_active >= (int)g_docs.size()) g_active = (int)g_docs.size() - 1;
     refreshTabs(); if (g_active >= 0) TabCtrl_SetCurSel(g_tab, g_active); showActive();
 }
+static void cmdClose() { closeDoc(g_active); }
+static int tabAt(POINT pt) { TCHITTESTINFO h = {pt, 0}; return TabCtrl_HitTest(g_tab, &h); }          // pt in tab-control client coordinates
+static bool onTabCross(int i, POINT pt) { RECT r; if (i < 0 || !TabCtrl_GetItemRect(g_tab, i, &r)) return false; return pt.x >= r.right - 22; }   // the x at the right end of a tab
 
 // ---- the .curtain project file (project.cpp)
 static bool saveCurtainFile(ModelDoc* d, const std::string& path) {
@@ -589,6 +592,7 @@ static LRESULT CALLBACK mainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_NOTIFY: {
         NMHDR* n = (NMHDR*)lp;
         if (n->hwndFrom == g_tab && n->code == TCN_SELCHANGE) { g_active = TabCtrl_GetCurSel(g_tab); showActive(); }
+        else if (n->hwndFrom == g_tab && n->code == NM_CLICK) { POINT pt; GetCursorPos(&pt); ScreenToClient(g_tab, &pt); const int i = tabAt(pt); if (onTabCross(i, pt)) closeDoc(i); }
         else if (n->hwndFrom == g_queue && n->code == NM_DBLCLK) jobCancelRow(((NMITEMACTIVATE*)lp)->iItem);
         return 0;
     }
