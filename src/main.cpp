@@ -44,7 +44,10 @@ HWND g_qTitle, g_qClear, g_qClose; bool g_queueOpen = true;                     
 // image tab controls
 HWND g_imgLabel[5], g_imgEdit[5], g_imgConvert, g_imgRandom, g_imgInfo;
 
-struct Job { uint64_t id; std::string name; std::string state; int percent = 0; std::string params; };
+struct Job { uint64_t id; std::string name; std::string state; int percent = 0; std::string params; std::string image, title; H3DParams p; };
+static int g_qListH = 110;                                                                                   // height of the job list: the user drags the bar above the queue to change it
+static const int kQBar = 6;                                                                                  // the grab bar above the queue title
+static const int kActCol = 4;                                                                                // the column with the three buttons of every job
 std::vector<Job> g_jobs; std::mutex g_jobMx; uint64_t g_nextJob = 1;
 }  // namespace
 
@@ -412,6 +415,9 @@ static void refreshQueue() {
         ListView_SetItemText(g_queue, (int)i, 1, &s[0]); std::wstring pc = std::to_wstring(g_jobs[i].percent) + L" %"; ListView_SetItemText(g_queue, (int)i, 2, &pc[0]);
         std::wstring pr = W(g_jobs[i].params); ListView_SetItemText(g_queue, (int)i, 3, &pr[0]);
     }
+    { int cur = -1; for (size_t i = 0; i < g_jobs.size(); i++) { const std::string& s = g_jobs[i].state; if (s != "Waiting" && s.rfind("Done", 0) && s.rfind("Failed", 0) && s != "Cancelled") { cur = (int)i; break; } }
+      if (cur < 0) for (size_t i = 0; i < g_jobs.size(); i++) if (g_jobs[i].state == "Waiting") { cur = (int)i; break; }
+      if (cur >= 0) ListView_EnsureVisible(g_queue, cur, FALSE); }
     const int vis = (!g_jobs.empty() && g_queueOpen) ? SW_SHOW : SW_HIDE; ShowWindow(g_queue, vis); ShowWindow(g_qTitle, vis); ShowWindow(g_qClear, vis); ShowWindow(g_qClose, vis); layout();
 }
 // ---- the shared queue of Image-to-3D jobs: one worker runs them one after the other
@@ -447,6 +453,7 @@ static void cmdConvert() {
     r.p.seed = (unsigned)im->seed; r.p.steps = im->steps; r.p.cfg = im->cfg; r.p.resolution = im->resolution; r.p.threshold = im->threshold; r.p.checkpoint = hunyuanModelPath();
     Job j; { std::lock_guard<std::mutex> g(g_jobMx); r.id = j.id = g_nextJob++; j.name = "Image to 3D: " + im->title + "  (seed " + std::to_string(im->seed) + ")"; j.state = "Waiting";
         { char pb[200]; snprintf(pb, sizeof pb, "seed %d,  %d steps,  CFG %.1f,  voxel resolution %d,  surface threshold %.2f", im->seed, im->steps, im->cfg, im->resolution, im->threshold); j.params = pb; }
+        j.image = r.image; j.title = r.title; j.p = r.p;
         g_jobs.push_back(j); g_cancels[r.id] = r.cancel; g_pendingJobs.push_back(r); if (!g_workerBusy) { g_workerBusy = true; std::thread(jobWorker).detach(); } }
     g_queueOpen = true; refreshQueue(); updateStatus();
 }
@@ -460,6 +467,18 @@ static void jobDone(JobDone* d) {
         auto doc = std::make_unique<ModelDoc>(); doc->title = d->title + " (3D)"; doc->setMesh(d->mesh); doc->path = d->saved; doc->dirty = d->saved.empty(); addDoc(std::move(doc));
     }
     delete d; refreshQueue();
+}
+static void enqueueRequest(const JobReq& r) { g_pendingJobs.push_back(r); if (!g_workerBusy) { g_workerBusy = true; std::thread(jobWorker).detach(); } }
+static bool jobActive(const Job& j) { return j.state == "Waiting" || (j.state.rfind("Done", 0) && j.state.rfind("Failed", 0) && j.state != "Cancelled"); }
+static void jobAction(int row, int which) {                                                                 // 0 cancel, 1 cancel and delete, 2 run again
+    std::lock_guard<std::mutex> g(g_jobMx); if (row < 0 || row >= (int)g_jobs.size()) return; Job j = g_jobs[row];
+    if (which == 0 || which == 1) {
+        if (jobActive(j)) { auto it = g_cancels.find(j.id); if (it != g_cancels.end()) *it->second = true; if (which == 0) g_jobs[row].state = "Cancelling..."; }
+        if (which == 1) g_jobs.erase(g_jobs.begin() + row);
+    } else {
+        JobReq r; r.id = g_nextJob++; r.image = j.image; r.title = j.title; r.p = j.p; r.cancel = std::make_shared<std::atomic<bool>>(false);
+        Job n = j; n.id = r.id; n.state = "Waiting"; n.percent = 0; g_jobs.push_back(n); g_cancels[r.id] = r.cancel; enqueueRequest(r);
+    }
 }
 static void jobCancelRow(int row) {
     uint64_t id = 0; { std::lock_guard<std::mutex> g(g_jobMx); if (row >= 0 && row < (int)g_jobs.size()) id = g_jobs[row].id; }
@@ -490,11 +509,11 @@ static void layout() {
     RECT rc; GetClientRect(g_main, &rc); const int Wd = rc.right, Hd = rc.bottom;
     const int tbH = toolbarHeight(); MoveWindow(g_toolbar, 0, 0, Wd, tbH, TRUE);
     SendMessageW(g_status, WM_SIZE, 0, 0); RECT sr; GetWindowRect(g_status, &sr); const int stH = sr.bottom - sr.top;
-    const int tabH = 28, qH = IsWindowVisible(g_queue) ? 134 : 0, top = tbH + tabH, ch = std::max(50, Hd - top - stH - qH);
+    const int tabH = 28, qH = IsWindowVisible(g_queue) ? g_qListH + 24 + kQBar : 0, top = tbH + tabH, ch = std::max(50, Hd - top - stH - qH);
     MoveWindow(g_tab, 0, tbH, Wd, tabH, TRUE);
     MoveWindow(g_view, 0, top, Wd, ch, TRUE); MoveWindow(g_imgPanel, 0, top, Wd, ch, TRUE);
     if (qH) {
-        MoveWindow(g_queue, 0, Hd - stH - 110, Wd, 110, TRUE); const int by = Hd - stH - qH;
+        MoveWindow(g_queue, 0, Hd - stH - g_qListH, Wd, g_qListH, TRUE); const int by = Hd - stH - g_qListH - 24;
         MoveWindow(g_qTitle, 8, by, std::max(100, Wd - 200), 24, TRUE); MoveWindow(g_qClear, Wd - 164, by + 1, 120, 22, TRUE); MoveWindow(g_qClose, Wd - 34, by + 1, 26, 22, TRUE);
     }
     MoveWindow(g_welcome, Wd / 2 - 320, top + ch / 2 - 30, 640, 60, TRUE);
@@ -559,8 +578,8 @@ static void createChildren() {
     // queue
     g_queue = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"", WS_CHILD | LVS_REPORT | LVS_SINGLESEL | LVS_NOSORTHEADER, 0, 0, 10, 10, g_main, (HMENU)IDC_QUEUE, g_inst, nullptr); SendMessageW(g_queue, WM_SETFONT, (WPARAM)g_font, TRUE);
     ListView_SetExtendedListViewStyle(g_queue, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
-    { const wchar_t* c[] = {L"Job", L"State", L"Progress", L"Parameters"}; const int w[] = {300, 520, 70, 460}; for (int i = 0; i < 4; i++) { LVCOLUMNW col = {}; col.mask = LVCF_TEXT | LVCF_WIDTH; col.pszText = (LPWSTR)c[i]; col.cx = w[i]; ListView_InsertColumn(g_queue, i, &col); } }
-    g_qTitle = mk(g_main, L"STATIC", L"  Job queue   (double-click a running job to cancel it)", SS_LEFT | SS_CENTERIMAGE, 0);
+    { const wchar_t* c[] = {L"Job", L"State", L"Progress", L"Parameters", L"Actions"}; const int w[] = {280, 440, 70, 400, 210}; for (int i = 0; i < 5; i++) { LVCOLUMNW col = {}; col.mask = LVCF_TEXT | LVCF_WIDTH; col.pszText = (LPWSTR)c[i]; col.cx = w[i]; ListView_InsertColumn(g_queue, i, &col); } }
+    g_qTitle = mk(g_main, L"STATIC", L"  Job queue   (Cancel stops a job, Delete stops and removes it, Re-run queues it again; drag the bar above to resize)", SS_LEFT | SS_CENTERIMAGE, 0);
     g_qClear = mk(g_main, L"BUTTON", L"Clear finished", BS_PUSHBUTTON | WS_TABSTOP, IDC_QCLEAR); g_qClose = mk(g_main, L"BUTTON", L"", BS_OWNERDRAW | WS_TABSTOP, IDC_QCLOSE);
     { HWND tip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, g_main, nullptr, g_inst, nullptr);
       TOOLINFOW ti = {sizeof ti}; ti.uFlags = TTF_SUBCLASS | TTF_IDISHWND; ti.hwnd = g_main; ti.uId = (UINT_PTR)g_qClose; ti.lpszText = (LPWSTR)L"Close the job queue (File > Job queue shows it again; running jobs go on)";
@@ -600,13 +619,37 @@ static void trackToRow(int row, bool commit) {
 static LRESULT CALLBACK mainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     switch (m) {
     case WM_SIZE: layout(); return 0;
+    case WM_SETCURSOR: { if (LOWORD(lp) == HTCLIENT && IsWindowVisible(g_queue)) { POINT pt; GetCursorPos(&pt); ScreenToClient(h, &pt); RECT rc; GetClientRect(h, &rc); RECT sr; GetWindowRect(g_status, &sr); const int y0 = rc.bottom - (sr.bottom - sr.top) - g_qListH - 24 - kQBar; if (pt.y >= y0 && pt.y < y0 + kQBar) { SetCursor(LoadCursorW(nullptr, IDC_SIZENS)); return TRUE; } } break; }
+    case WM_LBUTTONDOWN: { if (IsWindowVisible(g_queue)) { RECT rc; GetClientRect(h, &rc); RECT sr; GetWindowRect(g_status, &sr); const int y0 = rc.bottom - (sr.bottom - sr.top) - g_qListH - 24 - kQBar; const int y = (short)HIWORD(lp); if (y >= y0 && y < y0 + kQBar) { SetCapture(h); return 0; } } break; }
+    case WM_MOUSEMOVE: { if (GetCapture() == h) { RECT rc; GetClientRect(h, &rc); RECT sr; GetWindowRect(g_status, &sr); const int y = (short)HIWORD(lp); g_qListH = std::max(50, std::min((int)rc.bottom - 260, (int)rc.bottom - (int)(sr.bottom - sr.top) - 24 - y)); layout(); return 0; } break; }
+    case WM_LBUTTONUP: { if (GetCapture() == h) { ReleaseCapture(); return 0; } break; }
     case WM_GETMINMAXINFO: ((MINMAXINFO*)lp)->ptMinTrackSize = {960, 640}; return 0;
     case WM_DROPFILES: { HDROP dr = (HDROP)wp; UINT n = DragQueryFileW(dr, 0xFFFFFFFF, nullptr, 0); for (UINT i = 0; i < n; i++) { wchar_t b[MAX_PATH * 2]; DragQueryFileW(dr, i, b, MAX_PATH * 2); openPath(sys::narrow(b)); } DragFinish(dr); return 0; }
     case WM_NOTIFY: {
         NMHDR* n = (NMHDR*)lp;
         if (n->hwndFrom == g_tab && n->code == TCN_SELCHANGE) { g_active = TabCtrl_GetCurSel(g_tab); showActive(); }
         else if (n->hwndFrom == g_tab && n->code == NM_CLICK) { POINT pt; GetCursorPos(&pt); ScreenToClient(g_tab, &pt); const int i = tabAt(pt); if (onTabCross(i, pt)) closeDoc(i); }
-        else if (n->hwndFrom == g_queue && n->code == NM_DBLCLK) jobCancelRow(((NMITEMACTIVATE*)lp)->iItem);
+        else if (n->hwndFrom == g_queue && n->code == NM_CLICK) {
+            NMITEMACTIVATE* a = (NMITEMACTIVATE*)lp; LVHITTESTINFO hi = {}; hi.pt = a->ptAction; ListView_SubItemHitTest(g_queue, &hi); { FILE* lf = fopen("C:/Users/Administrator/AppData/Local/Temp/q.log", "a"); if (lf) { fprintf(lf, "click %ld %ld item %d sub %d\n", hi.pt.x, hi.pt.y, hi.iItem, hi.iSubItem); fclose(lf); } }
+            if (hi.iItem >= 0 && hi.iSubItem == kActCol) { RECT r; ListView_GetSubItemRect(g_queue, hi.iItem, kActCol, LVIR_BOUNDS, &r); const int k = (hi.pt.x - r.left - 4) / 66; if (k >= 0 && k < 3) { jobAction(hi.iItem, k); refreshQueue(); } }
+        }
+        else if (n->hwndFrom == g_queue && n->code == NM_CUSTOMDRAW) {
+            NMLVCUSTOMDRAW* cd = (NMLVCUSTOMDRAW*)lp;
+            if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
+            if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) return CDRF_NOTIFYSUBITEMDRAW;
+            if (cd->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT | CDDS_SUBITEM) && cd->iSubItem == kActCol) {
+                RECT r; ListView_GetSubItemRect(g_queue, (int)cd->nmcd.dwItemSpec, kActCol, LVIR_BOUNDS, &r); bool active = false;
+                { std::lock_guard<std::mutex> g(g_jobMx); if (cd->nmcd.dwItemSpec < g_jobs.size()) active = jobActive(g_jobs[cd->nmcd.dwItemSpec]); }
+                static const wchar_t* lab[3] = {L"Cancel", L"Delete", L"Re-run"}; const COLORREF col[3] = {RGB(205, 140, 30), RGB(200, 50, 50), RGB(50, 150, 80)};
+                HDC dc = cd->nmcd.hdc; HGDIOBJ of = SelectObject(dc, g_font); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255, 255, 255));
+                for (int k = 0; k < 3; k++) {
+                    RECT b = {r.left + 4 + k * 66, r.top + 2, r.left + 4 + k * 66 + 62, r.bottom - 2}; const bool on = k != 0 || active;
+                    HBRUSH br = CreateSolidBrush(on ? col[k] : RGB(110, 110, 110)); FillRect(dc, &b, br); DeleteObject(br); DrawTextW(dc, lab[k], -1, &b, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                }
+                SelectObject(dc, of); return CDRF_SKIPDEFAULT;
+            }
+            return CDRF_DODEFAULT;
+        }
         return 0;
     }
     case WM_TIMER: if (wp == TIMER_CURTAIN) { KillTimer(h, TIMER_CURTAIN); if (ModelDoc* d = activeModel()) requestCurtain(d); } return 0;
