@@ -1,4 +1,5 @@
 // Writers for the mesh formats: STL (binary), OBJ, PLY (binary), glTF (+ .bin), GLB, 3MF, OFF and STEP (faceted B-rep). The format comes from the file extension.
+#include <windows.h>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -100,6 +101,16 @@ bool save3mf(const std::string& path, const std::vector<Vec3>& v, const std::vec
 
 // ------------------------------------------------------------------ STEP: a faceted B-rep (AP203/AP214 faceted_brep): one planar face (FACE_SURFACE on a PLANE, bounded by a POLY_LOOP) per triangle. Units: millimetres.
 bool saveStep(const std::string& path, const std::vector<Vec3>& v, const std::vector<uint32_t>& idxIn, std::string& err) {
+    {   // preferred: OpenCascade builds a real solid (ADVANCED_FACE / MANIFOLD_SOLID_BREP) that every CAD program opens as a body
+        HMODULE dll = LoadLibraryW(sys::widen(sys::join(sys::exeDir(), "d3c_step.dll")).c_str());
+        typedef int (*WriteFn)(const char*, const float*, int, const unsigned*, int, char*, int);
+        WriteFn wr = dll ? (WriteFn)GetProcAddress(dll, "d3c_step_write") : nullptr;
+        if (wr) {
+            std::vector<float> fv; fv.reserve(v.size() * 3); for (auto& p : v) { fv.push_back(p.x); fv.push_back(p.y); fv.push_back(p.z); }
+            char e[400] = {}; if (wr(path.c_str(), fv.data(), (int)v.size(), idxIn.data(), (int)(idxIn.size() / 3), e, sizeof e) == 0) return true;
+            // on failure: fall through to the plain faceted writer below
+        }
+    }
     std::vector<uint32_t> idx; idx.reserve(idxIn.size());                                  // triangles without area have no plane: left out
     for (size_t t = 0; t + 2 < idxIn.size(); t += 3) { const Vec3 &a = v[idxIn[t]], &b = v[idxIn[t + 1]], &c = v[idxIn[t + 2]]; if (length(cross(b - a, c - a)) > 1e-12f && length(b - a) > 1e-9f) idx.insert(idx.end(), {idxIn[t], idxIn[t + 1], idxIn[t + 2]}); }
     if (idx.empty()) return fail(err, "There are no triangles with an area to write.");
