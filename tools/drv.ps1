@@ -48,6 +48,7 @@ foreach ($step in ($Do -split ';')) {
     'rmove'  { [void][D]::PostMessageW($view, 0x200, [IntPtr]2, (MkLp ([int]$a[1]) ([int]$a[2]))) }
     'rup'    { [void][D]::PostMessageW($view, 0x205, [IntPtr]0, (MkLp ([int]$a[1]) ([int]$a[2]))) }
     'key'    { [void][D]::PostMessageW($main, 0x100, [IntPtr][int]$a[1], [IntPtr]::Zero); Start-Sleep -Milliseconds 250 }
+    'export' { [void][D]::SendMessageW($main, 0x8000 + 98, [IntPtr]::Zero, [IntPtr]::Zero) }
     'wheel'  { [void][D]::PostMessageW($view, 0x20A, [IntPtr]([int]$a[1] -shl 16), [IntPtr]::Zero) }
     default  { }
   }

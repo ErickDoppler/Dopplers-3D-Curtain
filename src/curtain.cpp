@@ -279,7 +279,7 @@ static void decimateTo(const CurtainField& F, std::vector<Vec3>& V, std::vector<
     if (V.size() < 8 || I.empty()) return;
     for (auto& p : V) projectToSurface(F, p, 3);                                      // the surface-nets vertices are only near the surface: put them on it
     int levels = 0;
-    while (V.size() < target && levels < 3 && V.size() * 4 <= 3500000) { subdivideOnce(F, V, I); levels++; }
+    while (V.size() < target && levels < 8 && V.size() * 4 <= 8000000) { subdivideOnce(F, V, I); levels++; }
     if (V.size() > target + target / 20) decimateTo(F, V, I, target);
 }
 

@@ -114,7 +114,7 @@ bool saveStep(const std::string& path, const std::vector<Vec3>& v, const std::ve
     L("#16=(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.));\n#17=(NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.));\n#18=(NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT());\n#19=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-06),#16,'distance_accuracy_value','confusion accuracy');");
     const size_t T = idx.size() / 3, pBase = 100, fBase = pBase + v.size(), shell = fBase + 7 * T;                // entity numbers; per triangle 7 entities
     L("#20=FACETED_BREP('%s',#%zu);", name.c_str(), shell);
-    for (size_t i = 0; i < v.size(); i++) L("#%zu=CARTESIAN_POINT('',(%.7g,%.7g,%.7g));", pBase + i, v[i].x, v[i].y, v[i].z);
+    for (size_t i = 0; i < v.size(); i++) L("#%zu=CARTESIAN_POINT('',(%.7E,%.7E,%.7E));", pBase + i, v[i].x, v[i].y, v[i].z);
     for (size_t t = 0; t < T; t++) {
         const uint32_t i0 = idx[t * 3], i1 = idx[t * 3 + 1], i2 = idx[t * 3 + 2]; const Vec3 n = normalized(cross(v[i1] - v[i0], v[i2] - v[i0])), r = normalized(v[i1] - v[i0]); const size_t e = fBase + 7 * t;
         L("#%zu=POLY_LOOP('',(#%zu,#%zu,#%zu));", e, pBase + i0, pBase + i1, pBase + i2);
@@ -122,8 +122,8 @@ bool saveStep(const std::string& path, const std::vector<Vec3>& v, const std::ve
         L("#%zu=FACE_SURFACE('',(#%zu),#%zu,.T.);", e + 2, e + 1, e + 3);
         L("#%zu=PLANE('',#%zu);", e + 3, e + 4);
         L("#%zu=AXIS2_PLACEMENT_3D('',#%zu,#%zu,#%zu);", e + 4, pBase + i0, e + 5, e + 6);
-        L("#%zu=DIRECTION('',(%.7g,%.7g,%.7g));", e + 5, n.x, n.y, n.z);
-        L("#%zu=DIRECTION('',(%.7g,%.7g,%.7g));", e + 6, r.x, r.y, r.z);
+        L("#%zu=DIRECTION('',(%.7E,%.7E,%.7E));", e + 5, n.x, n.y, n.z);
+        L("#%zu=DIRECTION('',(%.7E,%.7E,%.7E));", e + 6, r.x, r.y, r.z);
     }
     s += "#" + std::to_string(shell) + "=CLOSED_SHELL('',(";
     for (size_t t = 0; t < T; t++) { s += "#" + std::to_string(fBase + 7 * t + 2); s += t + 1 < T ? "," : ""; if (t % 12 == 11) s += "\n"; }

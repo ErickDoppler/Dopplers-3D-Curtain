@@ -668,6 +668,11 @@ static LRESULT CALLBACK mainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         }
         return 0;
     }
+    case WM_APP + 98: {                                                              // test aid: export the curtain surface to the file named by D3C_EXPORT (same path as the menu)
+        const char* f = getenv("D3C_EXPORT"); ModelDoc* d = activeModel(); std::string e;
+        if (f && d) { ensureCurtainNow(d); if (d->curtain) saveMeshAny(f, d->curtain->v, d->curtain->idx, e); }
+        return 0;
+    }
     case WM_APP + 99: {                                                              // test aid: snapshot of the 3D view into %D3C_SNAPDIR%, one file per call
         static int n = 0; const char* dir = getenv("D3C_SNAPDIR"); if (dir) { char b[600]; snprintf(b, sizeof b, "%s\snap_%02d.bmp", dir, ++n); viewSnapshot(b); }
         return 0;
