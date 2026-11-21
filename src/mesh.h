@@ -28,3 +28,8 @@ bool saveGlb(const std::string& path, const std::vector<Vec3>& v, const std::vec
 void computeNormals(const std::vector<Vec3>& v, const std::vector<uint32_t>& idx, std::vector<Vec3>& n);
 // The "Object details" operation: vertices falling into removed cells of a 10000^3 grid over the bounding box are merged into the nearest kept neighbour.
 std::shared_ptr<Mesh> reduceDetails(const Mesh& m, double qualityPercent);
+
+// The eraser: removes the marked vertices and every triangle that used them, then closes each hole. For every hole the ring of vertices that were
+// connected to the removed ones is collected and triangulated (ear clipping in the plane of the ring), so the new ribs run between those neighbours.
+// Unused vertices are dropped. holesClosed (optional) receives the number of rings that were closed.
+std::shared_ptr<Mesh> eraseVertices(const Mesh& m, const std::vector<uint8_t>& del, size_t* holesClosed = nullptr);

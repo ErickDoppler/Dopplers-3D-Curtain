@@ -7,10 +7,12 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <thread>
 #include "app.h"
 #include "download.h"
+#include "h3d/pipeline.h"
 #include "ids.h"
 #include "project.h"
 #include "toolbar.h"
@@ -20,7 +22,7 @@ void setUniformScale(bool on);
 
 // ---------------------------------------------------------------------------------------------------------------- state
 namespace {
-const UINT WM_CURTAIN_DONE = WM_APP + 10, WM_JOB_UPDATE = WM_APP + 11;
+const UINT WM_CURTAIN_DONE = WM_APP + 10, WM_JOB_UPDATE = WM_APP + 11, WM_JOB_DONE = WM_APP + 12;
 const int TIMER_CURTAIN = 1;
 
 HINSTANCE g_inst; HWND g_main, g_tab, g_toolbar, g_status, g_view, g_panel, g_welcome, g_queue, g_imgPanel;
@@ -106,7 +108,7 @@ static void refreshCommands() {
     const bool can = d != nullptr, un = can && !d->undo.empty(), re = can && !d->redo.empty();
     toolbarEnable(IDM_UNDO, un); toolbarEnable(IDM_REDO, re);
     for (int id : {IDM_SAVE, IDM_SAVEAS}) toolbarEnable(id, can);
-    for (int id : {IDT_DISTANCE, IDT_PRECISION, IDT_DENSITY, IDT_SCALE, IDT_ROTATE, IDT_MOVE, IDT_DETAILS}) toolbarEnable(id, can);
+    for (int id : {IDT_DISTANCE, IDT_PRECISION, IDT_DENSITY, IDT_SCALE, IDT_ROTATE, IDT_MOVE, IDT_DETAILS, IDT_ERASER}) toolbarEnable(id, can);
     EnableMenuItem(m, IDM_UNDO, MF_BYCOMMAND | (un ? MF_ENABLED : MF_GRAYED)); EnableMenuItem(m, IDM_REDO, MF_BYCOMMAND | (re ? MF_ENABLED : MF_GRAYED));
     for (int id : {IDM_SAVE, IDM_SAVEAS, IDM_EXP_HEADER, IDM_EXP_BLOB, IDM_EXP_CURTAIN_OBJ, IDM_EXP_OBJ, IDM_EXP_GLB, IDM_CENTER, IDM_RESET, IDM_MODE_SMOOTH, IDM_MODE_HULL, IDM_VERTICES, IDM_PREVIEW, IDM_HIDE})
         EnableMenuItem(m, id, MF_BYCOMMAND | (can ? MF_ENABLED : MF_GRAYED));
@@ -115,8 +117,8 @@ static void refreshCommands() {
     CheckMenuItem(m, IDM_VERTICES, MF_BYCOMMAND | ((can && d->showVertices) ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuItem(m, IDM_PREVIEW, MF_BYCOMMAND | ((can && d->showCurtain) ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuItem(m, IDM_HIDE, MF_BYCOMMAND | ((can && d->hideObject) ? MF_CHECKED : MF_UNCHECKED));
-    const int ids[] = {IDT_DISTANCE, IDT_PRECISION, IDT_DENSITY, IDT_SCALE, IDT_ROTATE, IDT_MOVE, IDT_DETAILS}; const Tool ts[] = {Tool::Distance, Tool::Precision, Tool::Density, Tool::Scale, Tool::Rotate, Tool::Move, Tool::Details};
-    for (int i = 0; i < 7; i++) toolbarCheck(ids[i], can && g_tool == ts[i]);
+    const int ids[] = {IDT_DISTANCE, IDT_PRECISION, IDT_DENSITY, IDT_SCALE, IDT_ROTATE, IDT_MOVE, IDT_DETAILS, IDT_ERASER}; const Tool ts[] = {Tool::Distance, Tool::Precision, Tool::Density, Tool::Scale, Tool::Rotate, Tool::Move, Tool::Details, Tool::Eraser};
+    for (int i = 0; i < 8; i++) toolbarCheck(ids[i], can && g_tool == ts[i]);
     if (g_hide) SendMessageW(g_hide, BM_SETCHECK, (can && d->hideObject) ? BST_CHECKED : BST_UNCHECKED, 0);
     g_syncing = true; if (g_preview) SendMessageW(g_preview, BM_SETCHECK, (can && d->showCurtain) ? BST_CHECKED : BST_UNCHECKED, 0);
     if (g_alpha && can) SendMessageW(g_alpha, TBM_SETPOS, TRUE, (LPARAM)std::lround((1.0f - d->alpha) * 100)); g_syncing = false;
@@ -132,6 +134,7 @@ static double rowValue(ModelDoc* d, int r) {
     case Tool::Distance: return d->cur.cp.distance * 100.0;
     case Tool::Precision: return d->cur.cp.precision;
     case Tool::Density: return d->cur.cp.density;
+    case Tool::Eraser: return viewBrush();
     case Tool::Scale: return d->cur.xf.scale[r] * 100.0;
     case Tool::Rotate: return d->cur.xf.rotDeg[r];
     case Tool::Move: return r == 0 ? d->cur.xf.pos.x : d->cur.xf.pos.y;
@@ -161,6 +164,7 @@ static void panelConfigure() {
     case Tool::Scale: title = L"Object size per axis (percent)"; P.rows = 3; lab[0] = L"X %"; lab[1] = L"Y %"; lab[2] = L"Z %"; for (int r = 0; r < 3; r++) row(r, 5, 1000, 1, 1); break;
     case Tool::Rotate: title = L"Rotate the object about the horizon (degrees)"; P.rows = 3; lab[0] = L"X °"; lab[1] = L"Y °"; lab[2] = L"Z °"; for (int r = 0; r < 3; r++) row(r, -180, 180, 1, 1); break;
     case Tool::Move: { title = L"Move the object on the plate"; P.rows = 2; lab[0] = L"X"; lab[1] = L"Y"; double R = std::max(10.0 * d->diag(), 1.0); for (int r = 0; r < 2; r++) row(r, -R, R, 1000.0 / R, 3); break; }
+    case Tool::Eraser: title = L"Eraser: drag over the object; the vertices nearest your eye go, the hole is closed"; lab[0] = L"Brush px"; row(0, 3, 300, 1, 0); break;
     case Tool::Details: title = L"Object details: share of the vertices that stay (0.01 % steps). Apply removes the rest and closes the holes"; lab[0] = L"Quality %"; row(0, 0, 100, 100, 2); break;
     default: break;
     }
@@ -190,7 +194,11 @@ static void onGeometry(ModelDoc* d);
 static void applyDetails(double q);
 static void rowChanged(int r, double v, bool commit) {                             // a trackbar or edit changed row r
     ModelDoc* d = activeModel(); if (!d || !d->cur.mesh) return;
-    v = std::min(P.mx[r], std::max(P.mn[r], v)); d->beginEdit();
+    v = std::min(P.mx[r], std::max(P.mn[r], v));
+    if (g_tool == Tool::Eraser) {                                                                                  // the brush size is not part of the document
+        viewSetBrush((int)std::lround(v)); g_syncing = true; SendMessageW(P.tb[0], TBM_SETPOS, TRUE, (LPARAM)tbFromValue(0, v)); fmtEdit(P.ed[0], v, 0); g_syncing = false; viewRedraw(); return;
+    }
+    d->beginEdit();
     bool geom = false, cparam = false; Xform& xf = d->cur.xf;
     switch (g_tool) {
     case Tool::Distance: d->cur.cp.distance = (float)(v / 100.0); cparam = true; break;
@@ -367,17 +375,52 @@ static void refreshQueue() {
     }
     ShowWindow(g_queue, g_jobs.empty() ? SW_HIDE : SW_SHOW); layout();
 }
+// ---- the shared queue of Image-to-3D jobs: one worker runs them one after the other
+struct JobReq { uint64_t id; std::string image, title; H3DParams p; std::shared_ptr<std::atomic<bool>> cancel; };
+struct JobUpdate { uint64_t id; std::string state; int percent; };
+struct JobDone { uint64_t id; std::string title; bool ok; std::string err; std::shared_ptr<Mesh> mesh; };
+static std::deque<JobReq> g_pendingJobs; static std::map<uint64_t, std::shared_ptr<std::atomic<bool>>> g_cancels; static bool g_workerBusy = false;
+static void jobWorker() {
+    for (;;) {
+        JobReq j;
+        { std::lock_guard<std::mutex> g(g_jobMx); if (g_pendingJobs.empty()) { g_workerBusy = false; return; } j = g_pendingJobs.front(); g_pendingJobs.pop_front(); }
+        if (j.cancel->load()) { PostMessageW(g_main, WM_JOB_DONE, 0, (LPARAM) new JobDone{j.id, j.title, false, "cancelled", nullptr}); continue; }
+        auto mesh = std::make_shared<Mesh>(); std::string err;
+        auto prog = [&](const std::string& s, float f) { PostMessageW(g_main, WM_JOB_UPDATE, 0, (LPARAM) new JobUpdate{j.id, s, (int)(f * 100)}); return !j.cancel->load(); };
+        const bool ok = imageToMesh(j.image, j.p, *mesh, prog, err);
+        PostMessageW(g_main, WM_JOB_DONE, 0, (LPARAM) new JobDone{j.id, j.title, ok, err, mesh});
+    }
+}
 static void cmdConvert() {
     ImageDoc* im = activeImage(); if (!im) return; imgReadParams(im);
+    if (!hunyuanInstalled()) {
+        if (MessageBoxW(g_main, L"The Hunyuan3D model is not downloaded yet (4.9 GB).\n\nOpen the download window?", L"Doppler's 3D Curtain", MB_YESNO | MB_ICONQUESTION) == IDYES) showSetupDialog(g_main, false);
+        if (!hunyuanInstalled()) return;
+    }
+    if (!cudaInstalled() && MessageBoxW(g_main, L"The CUDA libraries are not installed, so the network would run on the processor: about 20 minutes or more instead of about a minute.\n\nContinue on the processor?", L"Doppler's 3D Curtain", MB_YESNO | MB_ICONWARNING) != IDYES) return;
     if (im->randomSeed) im->seed = (int)(GetTickCount() & 0x7FFFFFFF);
-    Job j; { std::lock_guard<std::mutex> g(g_jobMx); j.id = g_nextJob++; j.name = "Image to 3D: " + im->title; }
-    // The shape network (Hunyuan3D 2.0: image encoder, flow-matching transformer, shape decoder, surface extraction) is the next stage of the project.
-    if (!hunyuanInstalled()) j.state = "Waiting: the Hunyuan3D model is not downloaded (File > Download models)";
-    else j.state = "Failed: the Hunyuan3D engine is not built into this version yet";
-    { std::lock_guard<std::mutex> g(g_jobMx); g_jobs.push_back(j); }
+    JobReq r; r.title = im->title; r.image = im->path; r.cancel = std::make_shared<std::atomic<bool>>(false);
+    r.p.seed = (unsigned)im->seed; r.p.steps = im->steps; r.p.cfg = im->cfg; r.p.resolution = im->resolution; r.p.threshold = im->threshold; r.p.checkpoint = hunyuanModelPath();
+    Job j; { std::lock_guard<std::mutex> g(g_jobMx); r.id = j.id = g_nextJob++; j.name = "Image to 3D: " + im->title + "  (seed " + std::to_string(im->seed) + ")"; j.state = "Waiting"; g_jobs.push_back(j); g_cancels[r.id] = r.cancel; g_pendingJobs.push_back(r); if (!g_workerBusy) { g_workerBusy = true; std::thread(jobWorker).detach(); } }
     refreshQueue(); updateStatus();
 }
-static LRESULT CALLBACK imgProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
+static void jobUpdate(JobUpdate* u) {
+    { std::lock_guard<std::mutex> g(g_jobMx); for (auto& j : g_jobs) if (j.id == u->id) { j.state = u->state; j.percent = u->percent; } }
+    delete u; refreshQueue();
+}
+static void jobDone(JobDone* d) {
+    { std::lock_guard<std::mutex> g(g_jobMx); for (auto& j : g_jobs) if (j.id == d->id) { j.state = d->ok ? "Done: opened in a new tab" : (d->err == "cancelled" ? "Cancelled" : "Failed: " + d->err); j.percent = d->ok ? 100 : j.percent; } g_cancels.erase(d->id); }
+    if (d->ok && d->mesh) {
+        auto doc = std::make_unique<ModelDoc>(); doc->title = d->title + " (3D)"; doc->setMesh(d->mesh); doc->dirty = true; addDoc(std::move(doc));
+    }
+    delete d; refreshQueue();
+}
+static void jobCancelRow(int row) {
+    uint64_t id = 0; { std::lock_guard<std::mutex> g(g_jobMx); if (row >= 0 && row < (int)g_jobs.size()) id = g_jobs[row].id; }
+    if (!id) return; std::shared_ptr<std::atomic<bool>> c; { std::lock_guard<std::mutex> g(g_jobMx); auto it = g_cancels.find(id); if (it != g_cancels.end()) c = it->second; }
+    if (c && MessageBoxW(g_main, L"Cancel this job?", L"Doppler's 3D Curtain", MB_YESNO | MB_ICONQUESTION) == IDYES) { *c = true; std::lock_guard<std::mutex> g(g_jobMx); for (auto& j : g_jobs) if (j.id == id) j.state = "Cancelling..."; }
+    refreshQueue();
+}static LRESULT CALLBACK imgProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     if (m == WM_PAINT) {
         PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); RECT rc; GetClientRect(h, &rc); FillRect(dc, &rc, (HBRUSH)GetStockObject(DKGRAY_BRUSH));
         if (ImageDoc* im = activeImage()) {
@@ -507,9 +550,12 @@ static LRESULT CALLBACK mainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_NOTIFY: {
         NMHDR* n = (NMHDR*)lp;
         if (n->hwndFrom == g_tab && n->code == TCN_SELCHANGE) { g_active = TabCtrl_GetCurSel(g_tab); showActive(); }
+        else if (n->hwndFrom == g_queue && n->code == NM_DBLCLK) jobCancelRow(((NMITEMACTIVATE*)lp)->iItem);
         return 0;
     }
     case WM_TIMER: if (wp == TIMER_CURTAIN) { KillTimer(h, TIMER_CURTAIN); if (ModelDoc* d = activeModel()) requestCurtain(d); } return 0;
+    case WM_JOB_UPDATE: jobUpdate((JobUpdate*)lp); return 0;
+    case WM_JOB_DONE: jobDone((JobDone*)lp); return 0;
     case WM_CURTAIN_DONE: {
         CurJob* j = (CurJob*)lp;
         for (auto& dd : g_docs) if (dd->id == j->docId && dd->kind == Doc::Model) {
@@ -558,6 +604,7 @@ static LRESULT CALLBACK mainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             break;
         case IDT_DISTANCE: setTool(Tool::Distance); break; case IDT_PRECISION: setTool(Tool::Precision); break; case IDT_SCALE: setTool(Tool::Scale); break;
         case IDT_DENSITY: setTool(Tool::Density); break;
+        case IDT_ERASER: setTool(Tool::Eraser); break;
         case IDT_ROTATE: setTool(Tool::Rotate); break; case IDT_MOVE: setTool(Tool::Move); break; case IDT_DETAILS: setTool(Tool::Details); break;
         case IDC_APPLY: { wchar_t b[64]; GetWindowTextW(P.ed[0], b, 64); applyDetails(std::min(100.0, std::max(0.0, _wtof(b)))); break; }
         case IDC_UNIFORM: setUniformScale(SendMessageW(P.uniform, BM_GETCHECK, 0, 0) == BST_CHECKED); break;

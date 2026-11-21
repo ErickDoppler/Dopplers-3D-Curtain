@@ -418,3 +418,5 @@ bool curtainFieldFromBlob(const std::string& b, CurtainField& f) {
     for (size_t i = 0; i < cnt; i++) { int16_t q; memcpy(&q, b.data() + 36 + i * 2, 2); f.g[i] = q * hdr[4]; }
     return true;
 }
+
+void extractSurface(const CurtainField& f, std::vector<Vec3>& v, std::vector<uint32_t>& idx) { v.clear(); idx.clear(); surfaceNets(f, v, idx); }

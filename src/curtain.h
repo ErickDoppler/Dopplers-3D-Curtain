@@ -40,6 +40,8 @@ struct CurtainResult {
 
 // world-space triangles in; false when cancelled or the object is empty
 bool computeCurtain(const std::vector<Vec3>& wv, const std::vector<uint32_t>& idx, const CurtainParams& p, CurtainResult& out, const std::atomic<bool>* cancel);
+// the zero level of any field (negative inside) as a surface-nets mesh; used for the shapes that the image-to-3D network produces
+void extractSurface(const CurtainField& f, std::vector<Vec3>& v, std::vector<uint32_t>& idx);
 const int kMaxPrecision = 384, kMinPrecision = 16, kMinDensity = 200, kMaxDensity = 2000000;
 bool convexHull(const std::vector<Vec3>& pts, std::vector<Vec3>& hv, std::vector<uint32_t>& hidx);
 

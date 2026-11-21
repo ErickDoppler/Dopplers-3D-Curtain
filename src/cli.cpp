@@ -9,6 +9,7 @@
 #include <vector>
 #include "app.h"
 #include "curtain.h"
+#include "h3d/pipeline.h"
 #include "json.h"
 #include "mesh.h"
 #include "project.h"
@@ -74,7 +75,8 @@ int usage() {
         "  d3c reduce <model> --quality <percent> --out <file.obj|.glb>     object details: keep that share of the vertices\n"
         "  d3c convert <in> <out>               OBJ / STL / PLY / glTF / GLB in; OBJ / GLB out\n"
         "  d3c eval <file.cvf> <x> <y> <z> ...  signed distance of the curtain at points (negative inside)\n"
-        "  d3c image2mesh <image> ...           picture to 3D (Hunyuan3D): not built into this version yet\n\n"
+        "  d3c image2mesh <picture> --out <file.obj|.glb> [--seed N --steps 20 --cfg 8 --resolution 256 --threshold 0.7 --model <file> --backend auto|cpu|gpu --stretch 1]\n"
+        "                                       picture to 3D with the Hunyuan3D 2.0 shape network (needs the model: File > Download models in the window)\n\n"
         "  --json (anywhere) prints one JSON object instead of text. Exit code 0 = success.\n"
         "  Units are the model's own. Z is up; the object is put on the plate (lowest point at z = 0, centred in x and y).\n");
     return 0;
@@ -160,6 +162,27 @@ int cmdEval(const Args& a) {
     g_out["ok"] = true; g_out["points"] = pts;
     return 0;
 }
+int cmdImage2Mesh(const Args& a) {
+    if (a.pos.size() < 2 || !a.has("out")) return fail("usage: d3c image2mesh <picture> --out <model.obj|.glb> [--seed N --steps 20 --cfg 8 --resolution 256 --threshold 0.7 --model <file> --backend auto|cpu|gpu --stretch 1]");
+    H3DParams p;
+    p.checkpoint = a.get("model", sys::join(sys::join(sys::join(sys::exeDir(), "models"), "hunyuan3d"), "hunyuan3d-dit-v2_fp16.safetensors"));
+    if (!sys::exists(p.checkpoint)) return fail("The Hunyuan3D model file is missing: " + p.checkpoint + "\n(the program's File > Download models window fetches it, or give --model <file>)");
+    p.seed = (unsigned)a.num("seed", 0); p.steps = (int)a.num("steps", 20); p.cfg = (float)a.num("cfg", 8); p.resolution = (int)a.num("resolution", 256); p.threshold = (float)a.num("threshold", 0.7);
+    p.stretch = a.has("stretch") && a.get("stretch") != "0";
+    if (p.steps < 1 || p.steps > 200) return fail("--steps must be 1 - 200");
+    if (p.resolution < 16 || p.resolution > 512) return fail("--resolution must be 16 - 512");
+    if (a.has("backend")) _putenv(("D3C_BACKEND=" + a.get("backend")).c_str());
+    Mesh m; std::string err; const double t0 = sys::now(); int lastPct = -1;
+    auto prog = [&](const std::string& s, float f) { if (!g_json) { int pct = (int)(f * 100); if (pct != lastPct) { fprintf(stderr, "\r[%3d%%] %-60s", pct, s.c_str()); fflush(stderr); lastPct = pct; } } return true; };
+    if (!imageToMesh(a.pos[1], p, m, prog, err)) { if (!g_json) fprintf(stderr, "\n"); return fail(err); }
+    if (!g_json) fprintf(stderr, "\n");
+    if (!saveMeshAny(a.get("out"), m.v, m.idx, err)) return fail(err);
+    const double sec = sys::now() - t0;
+    say("model      %zu vertices, %zu triangles\ntime       %.1f s\nwrote      %s\n", m.v.size(), m.triCount(), sec, a.get("out").c_str());
+    g_out["ok"] = true; g_out["vertices"] = (long long)m.v.size(); g_out["triangles"] = (long long)m.triCount(); g_out["seconds"] = sec; g_out["out"] = a.get("out");
+    g_out["seed"] = (long long)p.seed; g_out["steps"] = p.steps; g_out["cfg"] = p.cfg; g_out["resolution"] = p.resolution; g_out["threshold"] = p.threshold;
+    return 0;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -173,7 +196,7 @@ int main(int argc, char** argv) {
     if (a.pos.empty() || a.pos[0] == "help" || a.pos[0] == "--help" || a.has("help")) return usage();
     const std::string c = a.pos[0]; int rc;
     if (c == "info") rc = cmdInfo(a); else if (c == "curtain") rc = cmdCurtain(a); else if (c == "reduce") rc = cmdReduce(a); else if (c == "convert") rc = cmdConvert(a); else if (c == "eval") rc = cmdEval(a);
-    else if (c == "image2mesh") return fail("Image to 3D (Hunyuan3D) is not built into this version yet.", 3);
+    else if (c == "image2mesh") rc = cmdImage2Mesh(a);
     else return fail("unknown command '" + c + "' (run d3c help)", 2);
     if (g_json && rc == 0) printf("%s\n", g_out.dump(2).c_str());
     return rc;

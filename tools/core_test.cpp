@@ -102,6 +102,26 @@ int main() {
         CHECK(e192 < e24 * 0.5 && e192 < 0.03, "higher precision follows the shape closer (%.4f vs %.4f)", e192, e24);
     }
 
+    // eraser: the hole is closed with ribs between the neighbours of the removed vertices
+    {
+        auto topo = [](const Mesh& q, size_t& open, size_t& nonman, long& euler) {
+            std::map<std::pair<uint32_t, uint32_t>, int> e; for (size_t t = 0; t + 2 < q.idx.size(); t += 3) for (int k = 0; k < 3; k++) { uint32_t a = q.idx[t + k], b = q.idx[t + (k + 1) % 3]; e[{std::min(a, b), std::max(a, b)}]++; }
+            open = nonman = 0; for (auto& kv : e) { if (kv.second == 1) open++; else if (kv.second > 2) nonman++; }
+            euler = (long)q.v.size() - (long)e.size() + (long)q.triCount(); };
+        size_t op, nm; long eu; topo(m, op, nm, eu); printf("torus: open %zu, non-manifold %zu, Euler characteristic %ld\n", op, nm, eu);
+        std::vector<uint8_t> del(m.v.size(), 0); del[100] = 1; size_t holes = 0; auto r1 = eraseVertices(m, del, &holes); topo(*r1, op, nm, eu);
+        CHECK(op == 0 && nm == 0 && eu == 0 && r1->triCount() + 2 == m.triCount() && holes == 1, "one vertex erased: closed, Euler 0, two triangles fewer (%zu -> %zu, %zu hole)", m.triCount(), r1->triCount(), holes);
+        std::fill(del.begin(), del.end(), 0); for (int i = 100; i < 106; i++) del[i] = 1; auto r2 = eraseVertices(m, del, &holes); topo(*r2, op, nm, eu);
+        CHECK(op == 0 && nm == 0 && eu == 0, "six neighbouring vertices erased: the one ring is closed (open %zu, non-manifold %zu, Euler %ld, %zu vertices left)", op, nm, eu, r2->v.size());
+        std::fill(del.begin(), del.end(), 0); size_t cnt = 0; for (size_t i = 0; i < m.v.size(); i++) if (m.v[i].x > 0.85f && m.v[i].z > -0.05f) { del[i] = 1; cnt++; }
+        auto r3 = eraseVertices(m, del, &holes); topo(*r3, op, nm, eu);
+        CHECK(op == 0 && nm == 0 && eu == 0, "a patch of %zu vertices erased: closed again (open %zu, non-manifold %zu, Euler %ld, %zu holes)", cnt, op, nm, eu, holes);
+        Mesh grid; const int G = 8; for (int j = 0; j <= G; j++) for (int i = 0; i <= G; i++) grid.v.emplace_back((float)i, (float)j, 0.0f);
+        for (int j = 0; j < G; j++) for (int i = 0; i < G; i++) { uint32_t a = j * (G + 1) + i, b = a + 1, c = a + G + 1, d = c + 1; grid.idx.insert(grid.idx.end(), {a, b, d, a, d, c}); }
+        topo(grid, op, nm, eu); const size_t border = op; std::vector<uint8_t> dg(grid.v.size(), 0); dg[4 * (G + 1) + 4] = 1; auto r4 = eraseVertices(grid, dg, &holes); topo(*r4, op, nm, eu);
+        CHECK(op == border && nm == 0 && eu == 1, "open sheet, middle vertex erased: no new open edges (border %zu, now %zu), still a disc (Euler %ld)", border, op, eu);
+    }
+
     // details
     auto red = reduceDetails(m, 50.0);
     double frac = (double)red->v.size() / m.v.size(); bool valid = true; for (auto i : red->idx) if (i >= red->v.size()) valid = false;

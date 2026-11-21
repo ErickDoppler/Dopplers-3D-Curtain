@@ -8,7 +8,7 @@
 #include "curtain.h"
 #include "mesh.h"
 
-enum class Tool { None, Distance, Precision, Density, Scale, Rotate, Move, Details };
+enum class Tool { None, Distance, Precision, Density, Scale, Rotate, Move, Details, Eraser };
 
 struct DocState {
     MeshPtr mesh; Xform xf; CurtainParams cp;
@@ -60,6 +60,8 @@ struct ImageDoc : Doc {
 HWND createView(HWND parent, HINSTANCE inst);
 void viewRedraw();
 bool viewSnapshot(const std::string& path);
+void viewSetBrush(int px);                              // eraser brush radius in pixels
+int viewBrush();
 void viewSetPreset(const char* name);                 // "front", "back", "left", "right", "top", "bottom", "center"
 
 // ---- hooks implemented by the main window (main.cpp)

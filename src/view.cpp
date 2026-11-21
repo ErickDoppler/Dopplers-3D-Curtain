@@ -5,6 +5,7 @@
 #include <GL/glext.h>
 #include <cstdio>
 #include "app.h"
+#include <vector>
 
 namespace {
 HWND g_view = nullptr; HDC g_dc = nullptr; HGLRC g_rc = nullptr;
@@ -185,6 +186,17 @@ void drawGizmo(ModelDoc* d) {
     glLineWidth(1.0f);
 }
 
+// ------------------------------------------------------------------ the eraser brush
+float g_brushPx = 40; POINT g_mouse = {-1, -1}; bool g_mouseIn = false, g_tracking = false;
+void drawBrush(int W, int H) {                                                                           // the brush circle follows the mouse
+    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); glOrtho(0, W, H, 0, -1, 1);
+    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
+    glDisable(GL_DEPTH_TEST); glDisable(GL_LIGHTING); glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_LINE_SMOOTH);
+    glLineWidth(2.0f); glColor4f(1.0f, 0.35f, 0.30f, 0.95f); glBegin(GL_LINE_LOOP);
+    for (int i = 0; i < 72; i++) { const float a = 2 * kPi * i / 72; glVertex2f(g_mouse.x + std::cos(a) * g_brushPx, g_mouse.y + std::sin(a) * g_brushPx); }
+    glEnd(); glLineWidth(1.0f); glColor4f(1, 1, 1, 0.9f); glBegin(GL_LINES); glVertex2f(g_mouse.x - 5, g_mouse.y); glVertex2f(g_mouse.x + 5, g_mouse.y); glVertex2f(g_mouse.x, g_mouse.y - 5); glVertex2f(g_mouse.x, g_mouse.y + 5); glEnd();
+    glEnable(GL_DEPTH_TEST); glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix(); glMatrixMode(GL_MODELVIEW);
+}
 void render() {
     if (!g_rc) return;
     wglMakeCurrent(g_dc, g_rc);
@@ -206,8 +218,32 @@ void render() {
         const Tool t = activeTool(); const bool editCurtain = t == Tool::Distance || t == Tool::Precision || t == Tool::Density;
         if (editCurtain || d->showCurtain) drawCurtain(d, editCurtain);
         drawGizmo(d);
+        if (activeTool() == Tool::Eraser && g_mouseIn) drawBrush(W, H);
     }
     SwapBuffers(g_dc);
+}
+
+// ------------------------------------------------------------------ the eraser
+// Deletes the vertices under the brush that are closest to the eye (the front layer, facing the eye) and closes the hole with ribs between their neighbours.
+bool eraseAt(ModelDoc* d, int px, int py, int W, int H) {
+    if (!d->cur.mesh || d->world.size() != d->cur.mesh->v.size() || d->wnormal.size() != d->world.size()) return false;
+    Cam k = camOf(d->cam); const float th = std::tan(rad(kFov) * 0.5f), asp = (float)W / std::max(1, H), r2 = g_brushPx * g_brushPx;
+    std::vector<int> cand; std::vector<float> depth; float zmin = 1e30f;
+    for (size_t i = 0; i < d->world.size(); i++) {
+        const Vec3 v = d->world[i] - k.eye; const float z = dot(v, k.fwd); if (z <= 1e-6f) continue;
+        const float sx = (dot(v, k.right) / (z * th * asp) * 0.5f + 0.5f) * W, sy = (0.5f - dot(v, k.up) / (z * th) * 0.5f) * H, dx = sx - px, dy = sy - py;
+        if (dx * dx + dy * dy > r2 || dot(d->wnormal[i], v) >= 0) continue;                                   // outside the brush, or turned away from the eye
+        cand.push_back((int)i); depth.push_back(z); zmin = std::min(zmin, z);
+    }
+    if (cand.empty()) return false;
+    const float perPx = 2.0f * zmin * th / std::max(1, H), slab = perPx * (g_brushPx * 0.6f + 2.0f);        // only the layer nearest to the eye, not what lies behind it
+    std::vector<uint8_t> del(d->world.size(), 0); for (size_t j = 0; j < cand.size(); j++) if (depth[j] <= zmin + slab) del[cand[j]] = 1;
+    auto nm = eraseVertices(*d->cur.mesh, del); if (nm->idx.size() < 12) return false;                      // never erase the whole object
+    d->cur.mesh = nm; d->rebuild(); return true;
+}
+void finishErase(ModelDoc* d) {                                                                              // the mesh bounds changed: new pivot, the object stays where it is
+    Mat4 M = xformMatrix(d->cur.xf, d->pivot); Vec3 lo, hi; d->cur.mesh->bounds(lo, hi); const Vec3 np = (lo + hi) * 0.5f;
+    d->cur.xf.pos = M.point(np); d->pivot = np; d->rebuild();
 }
 
 LRESULT CALLBACK viewProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
@@ -227,6 +263,9 @@ LRESULT CALLBACK viewProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         SetFocus(h); ModelDoc* d = activeModel(); if (!d) return 0;
         RECT rc; GetClientRect(h, &rc); int px = (short)LOWORD(lp), py = (short)HIWORD(lp);
         g_drag = Drag(); g_drag.last = g_drag.start = {px, py};
+        if (m == WM_LBUTTONDOWN && !(wp & MK_SHIFT) && activeTool() == Tool::Eraser && d->cur.mesh) {            // eraser stroke
+            g_drag.mode = 8; d->beginEdit(); SetCapture(h); if (eraseAt(d, px, py, rc.right, rc.bottom)) onEditChanged(d, false); InvalidateRect(h, nullptr, FALSE); return 0;
+        }
         if (m == WM_RBUTTONDOWN) g_drag.mode = 1;
         else if (m == WM_MBUTTONDOWN || (wp & MK_SHIFT)) g_drag.mode = 2;
         else if (d->cur.mesh) {
@@ -248,7 +287,14 @@ LRESULT CALLBACK viewProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_MOUSEMOVE: {
         ModelDoc* d = activeModel(); if (!d) return 0;
         int px = (short)LOWORD(lp), py = (short)HIWORD(lp); RECT rc; GetClientRect(h, &rc);
+        g_mouse = {px, py}; g_mouseIn = true; if (!g_tracking) { TRACKMOUSEEVENT te = {sizeof te, TME_LEAVE, h, 0}; TrackMouseEvent(&te); g_tracking = true; }
+        if (g_drag.mode == 8) {                                                                                  // eraser stroke: no gaps between the mouse samples
+            const float len = std::sqrt((float)((px - g_drag.last.x) * (px - g_drag.last.x) + (py - g_drag.last.y) * (py - g_drag.last.y))); const int steps = std::max(1, (int)std::ceil(len / std::max(4.0f, g_brushPx * 0.5f)));
+            bool any = false; for (int s = 1; s <= steps; s++) any |= eraseAt(d, g_drag.last.x + (px - g_drag.last.x) * s / steps, g_drag.last.y + (py - g_drag.last.y) * s / steps, rc.right, rc.bottom);
+            g_drag.last = {px, py}; if (any) onEditChanged(d, false); InvalidateRect(h, nullptr, FALSE); return 0;
+        }
         if (g_drag.mode == 0) {
+            if (activeTool() == Tool::Eraser) InvalidateRect(h, nullptr, FALSE);
             int hv = d->cur.mesh ? hitGizmo(d, px, py, rc.right, rc.bottom) : H_NONE;
             if (hv != g_hover) { g_hover = hv; InvalidateRect(h, nullptr, FALSE); }
             return 0;
@@ -283,9 +329,11 @@ LRESULT CALLBACK viewProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         InvalidateRect(h, nullptr, FALSE);
         return 0;
     }
+    case WM_MOUSELEAVE: g_tracking = false; g_mouseIn = false; InvalidateRect(h, nullptr, FALSE); return 0;
     case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP: {
         if (g_drag.mode) {
             ModelDoc* d = activeModel(); const int mode = g_drag.mode; g_drag = Drag(); ReleaseCapture();
+            if (d && mode == 8) finishErase(d);
             if (d && mode >= 3) { d->endEdit(); onEditChanged(d, true); }
             InvalidateRect(h, nullptr, FALSE);
         }
@@ -303,6 +351,8 @@ LRESULT CALLBACK viewProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
 }  // namespace
 
 void setUniformScale(bool on) { g_uniformScale = on; }
+void viewSetBrush(int px) { g_brushPx = (float)std::min(400, std::max(3, px)); }
+int viewBrush() { return (int)g_brushPx; }
 
 HWND createView(HWND parent, HINSTANCE inst) {
     WNDCLASSW wc = {}; wc.style = CS_OWNDC | CS_DBLCLKS; wc.lpfnWndProc = viewProc; wc.hInstance = inst; wc.hCursor = LoadCursorW(nullptr, IDC_ARROW); wc.lpszClassName = L"D3CView";

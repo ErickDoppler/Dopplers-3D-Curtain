@@ -340,3 +340,73 @@ std::shared_ptr<Mesh> reduceDetails(const Mesh& m, double q) {
     }
     return out;
 }
+
+// ------------------------------------------------------------------ eraser
+namespace {
+// ear clipping of one ring (vertex ids in the direction the new triangles must run); the ring is flattened onto its best-fit plane
+void triangulateRing(const std::vector<Vec3>& P, const std::vector<uint32_t>& L, std::vector<uint32_t>& out) {
+    const size_t n = L.size(); if (n < 3) return;
+    if (n == 3) { out.insert(out.end(), {L[0], L[1], L[2]}); return; }
+    Vec3 N;                                                                         // Newell normal
+    for (size_t i = 0; i < n; i++) { const Vec3 &a = P[L[i]], &b = P[L[(i + 1) % n]]; N.x += (a.y - b.y) * (a.z + b.z); N.y += (a.z - b.z) * (a.x + b.x); N.z += (a.x - b.x) * (a.y + b.y); }
+    N = normalized(N);
+    Vec3 u = std::fabs(N.x) < 0.9f ? cross(N, Vec3(1, 0, 0)) : cross(N, Vec3(0, 1, 0)); u = normalized(u); const Vec3 w = cross(N, u);
+    std::vector<float> X(n), Y(n); for (size_t i = 0; i < n; i++) { X[i] = dot(P[L[i]], u); Y[i] = dot(P[L[i]], w); }
+    auto cr = [&](size_t a, size_t b, size_t c) { return (X[b] - X[a]) * (Y[c] - Y[b]) - (Y[b] - Y[a]) * (X[c] - X[b]); };
+    auto inside = [&](size_t p, size_t a, size_t b, size_t c) { const float d1 = cr(a, b, p) , d2 = (X[c] - X[b]) * (Y[p] - Y[b]) - (Y[c] - Y[b]) * (X[p] - X[b]), d3 = (X[a] - X[c]) * (Y[p] - Y[c]) - (Y[a] - Y[c]) * (X[p] - X[c]); (void)d1;
+        const float e1 = (X[b] - X[a]) * (Y[p] - Y[a]) - (Y[b] - Y[a]) * (X[p] - X[a]); return e1 > 0 && d2 > 0 && d3 > 0; };
+    auto d2 = [&](size_t a, size_t b) { const Vec3 d = P[L[a]] - P[L[b]]; return dot(d, d); };
+    std::vector<size_t> r(n); for (size_t i = 0; i < n; i++) r[i] = i;
+    while (r.size() > 3) {
+        const size_t m = r.size(); int best = -1; float bestScore = 1e30f; int fallback = -1; float fbCross = -1e30f;
+        for (size_t i = 0; i < m; i++) {
+            const size_t a = r[(i + m - 1) % m], b = r[i], c = r[(i + 1) % m]; const float cc = cr(a, b, c);
+            if (cc > fbCross) { fbCross = cc; fallback = (int)i; }
+            if (cc <= 0.0f) continue;                                             // reflex or flat corner
+            bool ok = true; for (size_t j = 0; j < m && ok; j++) { const size_t p = r[j]; if (p != a && p != b && p != c && inside(p, a, b, c)) ok = false; }
+            if (!ok) continue;
+            const float score = std::max({d2(a, b), d2(b, c), d2(c, a)});            // prefer short ribs
+            if (score < bestScore) { bestScore = score; best = (int)i; }
+        }
+        const int i = best >= 0 ? best : fallback;
+        out.insert(out.end(), {L[r[(i + m - 1) % m]], L[r[i]], L[r[(i + 1) % m]]}); r.erase(r.begin() + i);
+    }
+    out.insert(out.end(), {L[r[0]], L[r[1]], L[r[2]]});
+}
+}  // namespace
+
+std::shared_ptr<Mesh> eraseVertices(const Mesh& m, const std::vector<uint8_t>& del, size_t* holesClosed) {
+    auto res = std::make_shared<Mesh>(); const size_t T = m.idx.size() / 3;
+    std::vector<uint32_t> tris; tris.reserve(m.idx.size()); std::vector<std::pair<uint32_t, uint32_t>> cut;   // edges around the holes, in the direction the closing triangles need
+    for (size_t t = 0; t < T; t++) {
+        const uint32_t a = m.idx[t * 3], b = m.idx[t * 3 + 1], c = m.idx[t * 3 + 2]; const int da = del[a], db = del[b], dc = del[c], k = da + db + dc;
+        if (k == 0) tris.insert(tris.end(), {a, b, c});
+        else if (k == 1) { if (da) cut.push_back({b, c}); else if (db) cut.push_back({c, a}); else cut.push_back({a, b}); }   // the edge opposite the removed vertex stays in the neighbour
+    }
+    // chain the cut edges into rings; a vertex that appears twice splits its ring into two
+    std::unordered_map<uint32_t, std::vector<int>> from; for (size_t i = 0; i < cut.size(); i++) from[cut[i].first].push_back((int)i);
+    std::vector<char> used(cut.size(), 0); size_t closed = 0; std::vector<uint32_t> fill;
+    for (size_t e0 = 0; e0 < cut.size(); e0++) {
+        if (used[e0]) continue;
+        std::vector<uint32_t> ring{cut[e0].first}; std::unordered_map<uint32_t, size_t> pos{{cut[e0].first, 0}}; used[e0] = 1; uint32_t v = cut[e0].second; bool open = false;
+        while (true) {
+            auto it = pos.find(v);
+            if (it != pos.end()) {                                                   // the ring came back to a vertex it already has
+                std::vector<uint32_t> sub(ring.begin() + it->second, ring.end());
+                triangulateRing(m.v, sub, fill); closed++;
+                for (size_t q = it->second + 1; q < ring.size(); q++) pos.erase(ring[q]);
+                ring.resize(it->second + 1);
+                if (ring.size() == 1 && it->second == 0) break;                      // the first vertex is reached: done
+            } else { pos[v] = ring.size(); ring.push_back(v); }
+            int nxt = -1; for (int ei : from[v]) if (!used[ei]) { nxt = ei; break; }
+            if (nxt < 0) { open = true; break; }                                     // an open chain (the hole runs into the border of the mesh): left alone
+            used[nxt] = 1; v = cut[nxt].second;
+        }
+        (void)open;
+    }
+    tris.insert(tris.end(), fill.begin(), fill.end());
+    std::vector<uint32_t> remap(m.v.size(), 0xFFFFFFFFu);
+    for (uint32_t i : tris) { if (remap[i] == 0xFFFFFFFFu) { remap[i] = (uint32_t)res->v.size(); res->v.push_back(m.v[i]); } res->idx.push_back(remap[i]); }
+    if (holesClosed) *holesClosed = closed;
+    return res;
+}

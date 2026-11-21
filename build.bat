@@ -9,4 +9,6 @@ cmake --build build %* || exit /b 1
 if not exist dist mkdir dist
 copy /y build\Dopplers3DCurtain.exe dist\ >nul
 copy /y build\d3c.exe dist\ >nul
+if exist build\h3d_test.exe copy /y build\h3d_test.exe dist\ >nul
+xcopy /y /d /q runtime\*.dll dist\ >nul
 echo built dist\Dopplers3DCurtain.exe and dist\d3c.exe

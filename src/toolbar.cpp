@@ -6,7 +6,7 @@
 #include "ids.h"
 
 namespace {
-enum Icon { I_OPEN, I_SAVE, I_SAVEAS, I_UNDO, I_REDO, I_DISTANCE, I_PRECISION, I_DENSITY, I_SIZE, I_ROTATE, I_MOVE, I_DETAILS };
+enum Icon { I_OPEN, I_SAVE, I_SAVEAS, I_UNDO, I_REDO, I_DISTANCE, I_PRECISION, I_DENSITY, I_SIZE, I_ROTATE, I_MOVE, I_DETAILS, I_ERASER };
 struct Btn { int id; Icon icon; const wchar_t* tip; bool tool, en, on; bool sepAfter; };
 std::vector<Btn> g_b = {
     {IDM_OPEN, I_OPEN, L"Open a 3D model, a picture, or a project   Ctrl+O", false, true, false, false},
@@ -21,6 +21,7 @@ std::vector<Btn> g_b = {
     {IDT_ROTATE, I_ROTATE, L"Rotate the object relative to the horizon (rings in the 3D view)", true, false, false, false},
     {IDT_MOVE, I_MOVE, L"Move the object on the working plate (arrows in the 3D view, or drag the object)", true, false, false, true},
     {IDT_DETAILS, I_DETAILS, L"Object details: remove a share of the object's vertices (0 - 100 %, step 0.01 %) and press Apply", true, false, false, false},
+    {IDT_ERASER, I_ERASER, L"Eraser: drag over the object to delete the vertices closest to your eye under the brush. The hole is closed with new ribs between the vertices that were connected to the deleted ones", true, false, false, false},
 };
 const int kBar = 48, kBtnW = 40, kBtnH = 38;
 HWND g_bar = nullptr, g_tip = nullptr; int g_hover = -1, g_down = -1; bool g_tracking = false;
@@ -87,6 +88,11 @@ void drawIcon(HDC dc, Icon ic, const RECT& r, COLORREF col, bool en) {
         line(-9, 0, 9, 0, 2, col); line(0, -9, 0, 9, 2, col);
         poly({P(-12, 0), P(-6, -4), P(-6, 4)}, col); poly({P(12, 0), P(6, -4), P(6, 4)}, col); poly({P(0, -12), P(-4, -6), P(4, -6)}, col); poly({P(0, 12), P(-4, 6), P(4, 6)}, col);
         break;
+    case I_ERASER: {                                                                            // a slanted eraser: white top, pink end, and the crumbs it leaves
+        poly({P(-3, -9), P(11, -2), P(8, 4), P(-6, -3)}, en ? RGB(240, 244, 250) : dim);
+        poly({P(-6, -3), P(8, 4), P(5, 10), P(-9, 3)}, col);
+        line(-12, 12, -4, 12, 2, dim); dot(-1, 13, dim); dot(5, 14, dim);
+        break; }
     case I_DETAILS:                                                                             // cubes of the grid: some stay, some are removed
         for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) {
             const int x = i * 8, y = j * 8; if (((i + j) & 1) == 0) rc(x - 3, y - 3, x + 4, y + 4, col);
@@ -99,7 +105,7 @@ COLORREF iconColor(Icon ic) {
     switch (ic) {
     case I_OPEN: return RGB(255, 196, 80); case I_SAVE: case I_SAVEAS: return RGB(110, 190, 245); case I_UNDO: case I_REDO: return RGB(190, 160, 255);
     case I_DISTANCE: return RGB(255, 120, 100); case I_PRECISION: return RGB(110, 225, 200); case I_DENSITY: return RGB(120, 170, 255);
-    case I_SIZE: return RGB(110, 230, 140); case I_ROTATE: return RGB(100, 215, 245); case I_MOVE: return RGB(255, 214, 80); case I_DETAILS: return RGB(255, 130, 190);
+    case I_ERASER: return RGB(255, 140, 170); case I_SIZE: return RGB(110, 230, 140); case I_ROTATE: return RGB(100, 215, 245); case I_MOVE: return RGB(255, 214, 80); case I_DETAILS: return RGB(255, 130, 190);
     }
     return RGB(225, 230, 240);
 }

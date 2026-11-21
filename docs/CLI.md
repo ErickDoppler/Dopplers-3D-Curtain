@@ -1,6 +1,6 @@
 # d3c - the command line
 
-`d3c.exe` (built by `build.bat` into `dist\`) does what the window does, without a window. It prints plain text, or with `--json` (anywhere on the line) **one JSON object**, so a script or Claude Code can read the result. Exit code `0` = success, `1` = error (message on stderr, or `{"ok": false, "error": ...}` with `--json`), `2` = unknown command, `3` = not built yet.
+`d3c.exe` (built by `build.bat` into `dist\`) does what the window does, without a window. It prints plain text, or with `--json` (anywhere on the line) **one JSON object**, so a script or Claude Code can read the result. Exit code `0` = success, `1` = error (message on stderr, or `{"ok": false, "error": ...}` with `--json`), `2` = unknown command, `3` = reserved.
 
 Units are the model's own. **Z is up.** Every model is put on the plate: centred in x and y, lowest point at z = 0. glTF / GLB files (Y-up by definition) are turned to Z-up on load.
 
@@ -12,7 +12,7 @@ d3c curtain <model | project.curtain> [options]     compute the curtain, write f
 d3c reduce <model> --quality <percent> --out <file.obj|.glb>     "Object details": keep that share of the vertices
 d3c convert <in> <out>                OBJ / STL / PLY / glTF / GLB in, OBJ / GLB out (identical vertices are welded)
 d3c eval <file.cvf> <x> <y> <z> ...   signed distance of the curtain at points (negative = inside)
-d3c image2mesh <image> ...            picture to 3D (Hunyuan3D): not built into this version yet (exit code 3)
+d3c image2mesh <picture> --out <file.obj|.glb> [options]     picture to 3D with the Hunyuan3D 2.0 shape network (model and CUDA libraries needed)
 ```
 
 ### `d3c curtain` options
@@ -32,6 +32,22 @@ d3c image2mesh <image> ...            picture to 3D (Hunyuan3D): not built into 
 | `--project <file.curtain>` | a project file (opens in the window) | |
 
 A `.curtain` project can be given instead of a model; options then override what it holds.
+
+### `d3c image2mesh` options
+
+| Option | Meaning | Default |
+|---|---|---|
+| `--out <file.obj\|.glb>` | the model (Z-up, upright, centred around the origin) | required |
+| `--seed <n>` | random start of the shape | 0 |
+| `--steps <1..200>` | sampler steps | 20 |
+| `--cfg <x>` | classifier-free guidance | 8 |
+| `--resolution <16..512>` | voxel resolution of the distance volume | 256 |
+| `--threshold <x>` | surface level in the volume | 0.7 |
+| `--model <file>` | `hunyuan3d-dit-v2_fp16.safetensors` | `models\hunyuan3d\` next to the program |
+| `--backend auto\|cpu\|gpu` | where to run | auto (CUDA when the libraries are there) |
+| `--stretch 1` | squash the picture to a square like the ComfyUI workflow, instead of padding with white | off |
+
+Time on an RTX 3080 Ti: about 30 s for the 20 steps, plus the volume decoding (resolution 128: about 25 s). On the processor it is 40 times slower. Combine it with `curtain` on the result: `d3c curtain model.glb ...`.
 
 ### Example
 
