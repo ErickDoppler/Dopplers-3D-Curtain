@@ -33,3 +33,9 @@ std::shared_ptr<Mesh> reduceDetails(const Mesh& m, double qualityPercent);
 // connected to the removed ones is collected and triangulated (ear clipping in the plane of the ring), so the new ribs run between those neighbours.
 // Unused vertices are dropped. holesClosed (optional) receives the number of rings that were closed.
 std::shared_ptr<Mesh> eraseVertices(const Mesh& m, const std::vector<uint8_t>& del, size_t* holesClosed = nullptr);
+// Drops tiny loose fragments (connected pieces of fewer than minTriangles triangles) that an erase can leave behind. nullptr when there is nothing to drop
+// (or the mesh is too small to tell debris from a real part).
+std::shared_ptr<Mesh> removeDebris(const Mesh& m, size_t minTriangles = 12);
+
+// Writes the mesh in the format of the file extension: obj, stl (binary), ply (binary), glb, gltf (+ .bin), 3mf, off, step / stp (faceted B-rep, millimetres).
+bool saveMeshAny(const std::string& path, const std::vector<Vec3>& v, const std::vector<uint32_t>& idx, std::string& err);

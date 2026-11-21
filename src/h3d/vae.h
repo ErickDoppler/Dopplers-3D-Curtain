@@ -16,6 +16,9 @@ public:
     bool query(const float* xyz, int n, float* out, std::string& err);
     // (res+1)^3 grid over [-bound, bound]^3, index [ix][iy][iz] with z fastest; progress(fraction) may return false to stop
     bool decodeGrid(int res, float bound, int chunk, std::vector<float>& grid, std::string& err, const std::function<bool(float)>& progress = nullptr);
+    // Same grid as decodeGrid, but coarse to fine: every stride-th point first (stride 4), then only the cells near the surface are refined down to the full
+    // resolution; the rest is interpolated. res must be a multiple of the stride. queries (optional) receives how many points were evaluated.
+    bool decodeGridHier(int res, float bound, int chunk, std::vector<float>& grid, std::string& err, const std::function<bool(float)>& progress = nullptr, size_t* queries = nullptr, int stride = 4);
     std::vector<float> transformerOut;                           // 3072 x 1024 after setLatents (for tests)
     void unload() { w_.reset(); }
     bool loaded() const { return w_ != nullptr; }

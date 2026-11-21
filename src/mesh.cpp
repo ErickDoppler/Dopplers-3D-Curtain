@@ -1,4 +1,5 @@
 #include "mesh.h"
+#include <windows.h>
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -6,6 +7,7 @@
 #include <map>
 #include <set>
 #include <unordered_map>
+#include <unordered_set>
 #include "json.h"
 #include "sys.h"
 
@@ -66,6 +68,40 @@ bool loadObj(const std::string& text, Mesh& m, std::string& err) {
     return true;
 }
 
+// ------------------------------------------------------------------ STEP, faceted only (POLY_LOOP faces: what mesh exporters and this program write). Real CAD B-reps go to OpenCascade.
+bool loadStepFaceted(const std::string& d, Mesh& m, std::string& err) {
+    std::unordered_map<uint32_t, uint32_t> pointOf; std::vector<std::vector<uint32_t>> loops; size_t pos = 0; const size_t n = d.size();
+    while (pos < n) {
+        const size_t h = d.find('#', pos); if (h == std::string::npos) break;
+        const size_t semi = d.find(';', h); if (semi == std::string::npos) break;
+        const char* p = d.c_str() + h + 1; char* q; const unsigned long id = strtoul(p, &q, 10); pos = semi + 1;
+        if (q == p || *q != '=') continue; p = q + 1; while (*p == ' ') p++;
+        if (!strncmp(p, "CARTESIAN_POINT", 15)) {
+            const char* end = d.c_str() + semi; const char* c = (const char*)memchr(p, '(', (size_t)(end - p)); if (c) c = (const char*)memchr(c + 1, '(', (size_t)(end - c - 1)); if (!c) continue; c += 1; float x = strtof(c, &q), y = 0, z = 0; if (*q == ',') y = strtof(q + 1, &q); if (*q == ',') z = strtof(q + 1, &q);
+            pointOf[(uint32_t)id] = (uint32_t)m.v.size(); m.v.emplace_back(x, y, z);
+        } else if (!strncmp(p, "POLY_LOOP", 9)) {
+            std::vector<uint32_t> L; const char* e = d.c_str() + semi; for (const char* c = (const char*)memchr(p, '(', (size_t)(e - p)); c && c < e; ++c) if (*c == '#') { L.push_back((uint32_t)strtoul(c + 1, &q, 10)); c = q - 1; }
+            if (L.size() >= 3) loops.push_back(std::move(L));
+        }
+    }
+    for (auto& L : loops) {
+        std::vector<uint32_t> poly; for (uint32_t id : L) { auto it = pointOf.find(id); if (it == pointOf.end()) return fail(err, "STEP: a loop uses a point that is not in the file"); poly.push_back(it->second); }
+        for (size_t k = 2; k < poly.size(); k++) { m.idx.push_back(poly[0]); m.idx.push_back(poly[k - 1]); m.idx.push_back(poly[k]); }
+    }
+    return !m.idx.empty() || fail(err, "STEP: no faceted faces found");
+}
+// ------------------------------------------------------------------ OFF
+bool loadOff(const std::string& d, Mesh& m, std::string& err) {
+    const char* p = d.c_str(); if (strncmp(p, "OFF", 3) != 0) return fail(err, "OFF: no header"); p += 3; char* q;
+    const long nv = strtol(p, &q, 10); p = q; const long nf = strtol(p, &q, 10); p = q; strtol(p, &q, 10); p = q;
+    if (nv <= 0 || nf <= 0) return fail(err, "OFF: no vertices or faces");
+    for (long i = 0; i < nv; i++) { float x = strtof(p, &q), y = strtof(q, &q), z = strtof(q, &q); p = q; m.v.emplace_back(x, y, z); }
+    for (long i = 0; i < nf; i++) {
+        const long n = strtol(p, &q, 10); p = q; std::vector<uint32_t> poly; for (long k = 0; k < n; k++) { long id = strtol(p, &q, 10); p = q; if (id < 0 || id >= nv) return fail(err, "OFF: a face uses a missing vertex"); poly.push_back((uint32_t)id); }
+        for (size_t k = 2; k < poly.size(); k++) { m.idx.push_back(poly[0]); m.idx.push_back(poly[k - 1]); m.idx.push_back(poly[k]); }
+    }
+    return true;
+}
 // ------------------------------------------------------------------ STL (binary or ASCII), vertices welded
 struct Key { uint32_t a, b, c; bool operator==(const Key& o) const { return a == o.a && b == o.b && c == o.c; } };
 struct KeyHash { size_t operator()(const Key& k) const { return (size_t)(k.a * 73856093u ^ k.b * 19349663u ^ k.c * 83492791u); } };
@@ -259,17 +295,37 @@ bool loadGltf(const std::string& path, const std::string& d, bool glb, Mesh& m, 
 
 bool loadMeshFile(const std::string& path, Mesh& out, std::string& err) {
     const std::string e = extOf(path); std::string d;
-    if (e == "step" || e == "stp") return fail(err, "STEP / STP files need a CAD kernel to turn their curved surfaces into triangles. That reader is not built yet; export the part as STL or OBJ from your CAD program for now.");
+    if ((e == "step" || e == "stp") && sys::readFile(path, d) && d.find("POLY_LOOP") != std::string::npos && d.find("EDGE_LOOP") == std::string::npos) { out = Mesh(); if (!loadStepFaceted(d, out, err)) return false; goto weld; }          // a plain list of triangles: read it directly
+    if (e == "step" || e == "stp") {                                                                  // OpenCascade does the B-rep -> triangles work, in d3c_step.dll
+        HMODULE dll = LoadLibraryW(sys::widen(sys::join(sys::exeDir(), "d3c_step.dll")).c_str());
+        if (!dll) return fail(err, "STEP files are read with OpenCascade: d3c_step.dll and the OpenCascade DLLs (libTK*.dll) must sit next to the program.");
+        typedef int (*ReadFn)(const char*, double, float**, int*, unsigned**, int*, char*, int); typedef void (*FreeFn)(void*);
+        ReadFn rd = (ReadFn)GetProcAddress(dll, "d3c_step_read"); FreeFn fr = (FreeFn)GetProcAddress(dll, "d3c_step_free");
+        if (!rd || !fr) return fail(err, "d3c_step.dll is not the right version.");
+        float* V = nullptr; unsigned* I = nullptr; int nv = 0, nt = 0; char msg[400] = {};
+        if (rd(path.c_str(), 0.0003, &V, &nv, &I, &nt, msg, sizeof msg) != 0) return fail(err, msg[0] ? msg : "The STEP file could not be read.");
+        out = Mesh(); out.v.resize((size_t)nv); for (int i = 0; i < nv; i++) out.v[i] = Vec3(V[i * 3], V[i * 3 + 1], V[i * 3 + 2]); out.idx.assign(I, I + (size_t)nt * 3);
+        fr(V); fr(I);
+        // the faces were meshed one by one: merge the vertices that meet on the shared edges (within a tiny fraction of the size)
+        Vec3 lo, hi; out.bounds(lo, hi); const float tol = std::max(1e-9f, length(hi - lo) * 1e-6f); std::map<std::array<long long, 3>, uint32_t> grid; std::vector<uint32_t> map(out.v.size()); Mesh w;
+        for (size_t i = 0; i < out.v.size(); i++) { const Vec3& p = out.v[i]; std::array<long long, 3> k = {std::llround(p.x / tol), std::llround(p.y / tol), std::llround(p.z / tol)};
+            auto it = grid.find(k); if (it == grid.end()) { it = grid.emplace(k, (uint32_t)w.v.size()).first; w.v.push_back(p); } map[i] = it->second; }
+        for (size_t t = 0; t + 2 < out.idx.size(); t += 3) { uint32_t a = map[out.idx[t]], b = map[out.idx[t + 1]], c = map[out.idx[t + 2]]; if (a != b && b != c && a != c) { w.idx.push_back(a); w.idx.push_back(b); w.idx.push_back(c); } }
+        if (w.idx.empty()) return fail(err, "The STEP file holds no usable triangles.");
+        out = std::move(w); return true;
+    }
     if (!sys::readFile(path, d)) return fail(err, "Cannot read " + path);
     out = Mesh(); bool ok;
-    if (e == "obj") ok = loadObj(d, out, err); else if (e == "stl") ok = loadStl(d, out, err); else if (e == "ply") ok = loadPly(d, out, err);
+    if (e == "obj") ok = loadObj(d, out, err); else if (e == "stl") ok = loadStl(d, out, err); else if (e == "ply") ok = loadPly(d, out, err); else if (e == "off") ok = loadOff(d, out, err);
     else if (e == "glb") ok = loadGltf(path, d, true, out, err); else if (e == "gltf") ok = loadGltf(path, d, false, out, err);
     else return fail(err, "Unknown file type ." + e);
     if (!ok) return false;
     if (out.v.empty() || out.idx.empty()) return fail(err, "The file holds no triangles.");
+    weld:
     // formats like glTF and PLY often repeat a vertex for every triangle corner (split normals, UVs): merge identical positions so that neighbours share vertices
     { Mesh w; w.idx.reserve(out.idx.size()); std::vector<uint32_t> map(out.v.size()); Welder wl(w);
-      for (size_t i = 0; i < out.v.size(); i++) { Vec3 p = out.v[i]; if (p.x == 0) p.x = 0.0f; if (p.y == 0) p.y = 0.0f; if (p.z == 0) p.z = 0.0f; map[i] = wl.add(p); }
+      std::vector<char> usedV(out.v.size(), 0); for (uint32_t ix : out.idx) if (ix < usedV.size()) usedV[ix] = 1;      // vertices that no triangle uses (a STEP origin point, say) are dropped
+      for (size_t i = 0; i < out.v.size(); i++) { if (!usedV[i]) continue; Vec3 p = out.v[i]; if (p.x == 0) p.x = 0.0f; if (p.y == 0) p.y = 0.0f; if (p.z == 0) p.z = 0.0f; map[i] = wl.add(p); }
       for (size_t t = 0; t + 2 < out.idx.size(); t += 3) { uint32_t a = map[out.idx[t]], b = map[out.idx[t + 1]], c = map[out.idx[t + 2]]; if (a != b && b != c && a != c) { w.idx.push_back(a); w.idx.push_back(b); w.idx.push_back(c); } }
       if (w.idx.empty()) return fail(err, "The file holds no usable triangles."); out = std::move(w); }
     return true;
@@ -344,7 +400,8 @@ std::shared_ptr<Mesh> reduceDetails(const Mesh& m, double q) {
 // ------------------------------------------------------------------ eraser
 namespace {
 // ear clipping of one ring (vertex ids in the direction the new triangles must run); the ring is flattened onto its best-fit plane
-void triangulateRing(const std::vector<Vec3>& P, const std::vector<uint32_t>& L, std::vector<uint32_t>& out) {
+inline uint64_t ekey(uint32_t a, uint32_t b) { return a < b ? ((uint64_t)a << 32) | b : ((uint64_t)b << 32) | a; }
+void triangulateRing(std::vector<Vec3>& P, const std::vector<uint32_t>& L, std::vector<uint32_t>& out, std::unordered_set<uint64_t>& E) {
     const size_t n = L.size(); if (n < 3) return;
     if (n == 3) { out.insert(out.end(), {L[0], L[1], L[2]}); return; }
     Vec3 N;                                                                         // Newell normal
@@ -365,10 +422,17 @@ void triangulateRing(const std::vector<Vec3>& P, const std::vector<uint32_t>& L,
             if (cc <= 0.0f) continue;                                             // reflex or flat corner
             bool ok = true; for (size_t j = 0; j < m && ok; j++) { const size_t p = r[j]; if (p != a && p != b && p != c && inside(p, a, b, c)) ok = false; }
             if (!ok) continue;
+            if (E.count(ekey(L[a], L[c]))) continue;                                  // that diagonal already exists elsewhere in the mesh: it would make an edge with three faces
             const float score = std::max({d2(a, b), d2(b, c), d2(c, a)});            // prefer short ribs
             if (score < bestScore) { bestScore = score; best = (int)i; }
         }
-        const int i = best >= 0 ? best : fallback;
+        if (best < 0) {                                                             // no clean ear left (a tangled ring): fan the rest around a new centre vertex, which cannot fold over
+            Vec3 c; for (size_t q : r) c += P[L[q]]; c = c / (float)r.size(); const uint32_t ci = (uint32_t)P.size(); P.push_back(c);
+            for (size_t q = 0; q < r.size(); q++) out.insert(out.end(), {L[r[q]], L[r[(q + 1) % r.size()]], ci});
+            return;
+        }
+        (void)fallback; const int i = best;
+        E.insert(ekey(L[r[(i + m - 1) % m]], L[r[(i + 1) % m]]));
         out.insert(out.end(), {L[r[(i + m - 1) % m]], L[r[i]], L[r[(i + 1) % m]]}); r.erase(r.begin() + i);
     }
     out.insert(out.end(), {L[r[0]], L[r[1]], L[r[2]]});
@@ -376,13 +440,15 @@ void triangulateRing(const std::vector<Vec3>& P, const std::vector<uint32_t>& L,
 }  // namespace
 
 std::shared_ptr<Mesh> eraseVertices(const Mesh& m, const std::vector<uint8_t>& del, size_t* holesClosed) {
-    auto res = std::make_shared<Mesh>(); const size_t T = m.idx.size() / 3;
+    auto res = std::make_shared<Mesh>(); const size_t T = m.idx.size() / 3; std::vector<Vec3> pts = m.v;             // pts grows when a tangled ring needs a centre vertex
     std::vector<uint32_t> tris; tris.reserve(m.idx.size()); std::vector<std::pair<uint32_t, uint32_t>> cut;   // edges around the holes, in the direction the closing triangles need
     for (size_t t = 0; t < T; t++) {
         const uint32_t a = m.idx[t * 3], b = m.idx[t * 3 + 1], c = m.idx[t * 3 + 2]; const int da = del[a], db = del[b], dc = del[c], k = da + db + dc;
         if (k == 0) tris.insert(tris.end(), {a, b, c});
         else if (k == 1) { if (da) cut.push_back({b, c}); else if (db) cut.push_back({c, a}); else cut.push_back({a, b}); }   // the edge opposite the removed vertex stays in the neighbour
     }
+    std::unordered_set<uint64_t> edgeSet; edgeSet.reserve(tris.size() * 2);
+    for (size_t q = 0; q + 2 < tris.size(); q += 3) { edgeSet.insert(ekey(tris[q], tris[q + 1])); edgeSet.insert(ekey(tris[q + 1], tris[q + 2])); edgeSet.insert(ekey(tris[q + 2], tris[q])); }
     // chain the cut edges into rings; a vertex that appears twice splits its ring into two
     std::unordered_map<uint32_t, std::vector<int>> from; for (size_t i = 0; i < cut.size(); i++) from[cut[i].first].push_back((int)i);
     std::vector<char> used(cut.size(), 0); size_t closed = 0; std::vector<uint32_t> fill;
@@ -393,7 +459,7 @@ std::shared_ptr<Mesh> eraseVertices(const Mesh& m, const std::vector<uint8_t>& d
             auto it = pos.find(v);
             if (it != pos.end()) {                                                   // the ring came back to a vertex it already has
                 std::vector<uint32_t> sub(ring.begin() + it->second, ring.end());
-                triangulateRing(m.v, sub, fill); closed++;
+                triangulateRing(pts, sub, fill, edgeSet); closed++;
                 for (size_t q = it->second + 1; q < ring.size(); q++) pos.erase(ring[q]);
                 ring.resize(it->second + 1);
                 if (ring.size() == 1 && it->second == 0) break;                      // the first vertex is reached: done
@@ -405,8 +471,22 @@ std::shared_ptr<Mesh> eraseVertices(const Mesh& m, const std::vector<uint8_t>& d
         (void)open;
     }
     tris.insert(tris.end(), fill.begin(), fill.end());
-    std::vector<uint32_t> remap(m.v.size(), 0xFFFFFFFFu);
-    for (uint32_t i : tris) { if (remap[i] == 0xFFFFFFFFu) { remap[i] = (uint32_t)res->v.size(); res->v.push_back(m.v[i]); } res->idx.push_back(remap[i]); }
+    std::vector<uint32_t> remap(pts.size(), 0xFFFFFFFFu);
+    for (uint32_t i : tris) { if (remap[i] == 0xFFFFFFFFu) { remap[i] = (uint32_t)res->v.size(); res->v.push_back(pts[i]); } res->idx.push_back(remap[i]); }
     if (holesClosed) *holesClosed = closed;
     return res;
+}
+
+std::shared_ptr<Mesh> removeDebris(const Mesh& m, size_t minTris) {
+    const size_t T = m.idx.size() / 3; if (T < minTris * 20) return nullptr;
+    std::vector<uint32_t> par(m.v.size()); for (size_t i = 0; i < par.size(); i++) par[i] = (uint32_t)i;
+    auto find = [&](uint32_t x) { while (par[x] != x) { par[x] = par[par[x]]; x = par[x]; } return x; };
+    for (size_t t = 0; t < T; t++) { uint32_t a = find(m.idx[t * 3]), b = find(m.idx[t * 3 + 1]), c = find(m.idx[t * 3 + 2]); par[b] = a; par[find(c)] = find(a); }
+    std::vector<uint32_t> cnt(m.v.size(), 0); for (size_t t = 0; t < T; t++) cnt[find(m.idx[t * 3])]++;
+    auto res = std::make_shared<Mesh>(); std::vector<uint32_t> remap(m.v.size(), 0xFFFFFFFFu); size_t dropped = 0;
+    for (size_t t = 0; t < T; t++) {
+        if (cnt[find(m.idx[t * 3])] < minTris) { dropped++; continue; }
+        for (int k = 0; k < 3; k++) { uint32_t i = m.idx[t * 3 + k]; if (remap[i] == 0xFFFFFFFFu) { remap[i] = (uint32_t)res->v.size(); res->v.push_back(m.v[i]); } res->idx.push_back(remap[i]); }
+    }
+    return dropped ? res : nullptr;
 }

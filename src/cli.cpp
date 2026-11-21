@@ -54,11 +54,6 @@ bool loadDoc(const std::string& path, ModelDoc& d, std::string& err) {
     auto m = std::make_shared<Mesh>(); if (!loadMeshFile(path, *m, err)) return false;
     d.setMesh(m); return true;
 }
-bool saveMeshAny(const std::string& path, const std::vector<Vec3>& v, const std::vector<uint32_t>& idx, std::string& err) {
-    const std::string e = extOf(path); if (e == "glb") return saveGlb(path, v, idx, err); if (e == "obj" || e.empty()) return saveObj(path, v, idx, err);
-    err = "Unknown output format ." + e + " (use .obj or .glb)"; return false;
-}
-
 int usage() {
     printf(
         "d3c - command line of Doppler's 3D Curtain\n\n"
@@ -73,7 +68,7 @@ int usage() {
         "        --header <file.h> [--name id]  engine header with an evaluate function (one trilinear lookup)\n"
         "        --cvf <file.cvf>               engine binary distance field           --project <file.curtain>   project file\n"
         "  d3c reduce <model> --quality <percent> --out <file.obj|.glb>     object details: keep that share of the vertices\n"
-        "  d3c convert <in> <out>               OBJ / STL / PLY / glTF / GLB in; OBJ / GLB out\n"
+        "  d3c convert <in> <out>               OBJ / STL / PLY / glTF / GLB in; OBJ / STL / PLY / GLB / glTF / 3MF / OFF / STEP out\n"
         "  d3c eval <file.cvf> <x> <y> <z> ...  signed distance of the curtain at points (negative inside)\n"
         "  d3c image2mesh <picture> --out <file.obj|.glb> [--seed N --steps 20 --cfg 8 --resolution 256 --threshold 0.7 --model <file> --backend auto|cpu|gpu --stretch 1]\n"
         "                                       picture to 3D with the Hunyuan3D 2.0 shape network (needs the model: File > Download models in the window)\n\n"
@@ -86,9 +81,11 @@ int cmdInfo(const Args& a) {
     if (a.pos.size() < 2) return fail("info needs a model file");
     ModelDoc d; std::string err; if (!loadDoc(a.pos[1], d, err)) return fail(err);
     size_t open, nm; edgeStats(d.cur.mesh->idx, open, nm); const Vec3 s = d.whi - d.wlo;
+    double vol = 0, area = 0; for (size_t i = 0; i + 2 < d.cur.mesh->idx.size(); i += 3) { const Vec3 &p = d.world[d.cur.mesh->idx[i]], &q = d.world[d.cur.mesh->idx[i + 1]], &r = d.world[d.cur.mesh->idx[i + 2]]; vol += dot(p, cross(q, r)) / 6.0; area += 0.5 * length(cross(q - p, r - p)); }
+    say("volume     %.6g   surface area %.6g%s\n", std::fabs(vol), area, (open || nm) ? "   (not watertight: the volume is only approximate)" : "");
     say("file       %s\nvertices   %zu\ntriangles  %zu\nsize       %.6g x %.6g x %.6g   (diagonal %.6g)\nopen edges %zu   non-manifold edges %zu\n", a.pos[1].c_str(), d.cur.mesh->v.size(), d.cur.mesh->triCount(), s.x, s.y, s.z, d.diag(), open, nm);
     g_out["ok"] = true; g_out["file"] = a.pos[1]; g_out["vertices"] = (long long)d.cur.mesh->v.size(); g_out["triangles"] = (long long)d.cur.mesh->triCount();
-    g_out["size"] = jv(s); g_out["diagonal"] = d.diag(); g_out["open_edges"] = (long long)open; g_out["non_manifold_edges"] = (long long)nm; g_out["watertight"] = open == 0 && nm == 0;
+    g_out["size"] = jv(s); g_out["diagonal"] = d.diag(); g_out["open_edges"] = (long long)open; g_out["non_manifold_edges"] = (long long)nm; g_out["watertight"] = open == 0 && nm == 0; g_out["volume"] = std::fabs(vol); g_out["surface_area"] = area;
     return 0;
 }
 
@@ -169,6 +166,7 @@ int cmdImage2Mesh(const Args& a) {
     if (!sys::exists(p.checkpoint)) return fail("The Hunyuan3D model file is missing: " + p.checkpoint + "\n(the program's File > Download models window fetches it, or give --model <file>)");
     p.seed = (unsigned)a.num("seed", 0); p.steps = (int)a.num("steps", 20); p.cfg = (float)a.num("cfg", 8); p.resolution = (int)a.num("resolution", 256); p.threshold = (float)a.num("threshold", 0.7);
     p.stretch = a.has("stretch") && a.get("stretch") != "0";
+    if (a.has("dump")) p.dumpDir = a.get("dump");                                                     // developer aid: final_latent.bin and grid.bin go there
     if (p.steps < 1 || p.steps > 200) return fail("--steps must be 1 - 200");
     if (p.resolution < 16 || p.resolution > 512) return fail("--resolution must be 16 - 512");
     if (a.has("backend")) _putenv(("D3C_BACKEND=" + a.get("backend")).c_str());

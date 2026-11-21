@@ -102,3 +102,48 @@ bool ShapeVAE::decodeGrid(int res, float bound, int chunk, std::vector<float>& g
     }
     return true;
 }
+
+bool ShapeVAE::decodeGridHier(int res, float bound, int chunk, std::vector<float>& grid, std::string& err, const std::function<bool(float)>& progress, size_t* queries, int stride) {
+    const int N = res + 1; if (res % stride != 0 || stride < 2) { err = "the resolution must be a multiple of the coarse stride"; return false; }
+    const size_t total = (size_t)N * N * N; grid.assign(total, 0.0f); std::vector<uint8_t> state(total, 0);                       // 0 unknown, 1 known, 2 queued
+    auto id = [&](int x, int y, int z) { return ((size_t)x * N + y) * N + z; };
+    const float lowTh = 0.0f, highTh = 0.95f; (void)lowTh;
+    size_t done = 0, nq = 0; std::vector<float> xyz((size_t)chunk * 3), out((size_t)chunk);
+    auto evaluate = [&](const std::vector<uint32_t>& pts, float f0, float f1) -> bool {                                           // pts: packed grid ids
+        for (size_t s = 0; s < pts.size(); s += (size_t)chunk) {
+            const int m = (int)std::min<size_t>(chunk, pts.size() - s);
+            for (int i = 0; i < m; i++) { const size_t g = pts[s + i]; const int z = (int)(g % N), y = (int)((g / N) % N), x = (int)(g / ((size_t)N * N)); xyz[(size_t)i * 3] = -bound + 2 * bound * x / res; xyz[(size_t)i * 3 + 1] = -bound + 2 * bound * y / res; xyz[(size_t)i * 3 + 2] = -bound + 2 * bound * z / res; }
+            if (!query(xyz.data(), m, out.data(), err)) return false;
+            for (int i = 0; i < m; i++) { grid[pts[s + i]] = out[i]; state[pts[s + i]] = 1; }
+            nq += (size_t)m; if (progress && !progress(f0 + (f1 - f0) * (float)(s + m) / (float)pts.size())) { err = "cancelled"; return false; }
+        }
+        return true;
+    };
+    std::vector<uint32_t> pts;
+    for (int x = 0; x <= res; x += stride) for (int y = 0; y <= res; y += stride) for (int z = 0; z <= res; z += stride) pts.push_back((uint32_t)id(x, y, z));
+    if (!evaluate(pts, 0.0f, 0.08f)) return false;
+    for (int s = stride; s >= 2; s /= 2) {
+        const int h = s / 2; const float f0 = 0.08f + 0.92f * (float)(stride / s - 1) / 2.0f / std::max(1, (int)std::log2(stride)) , f1 = f0 + 0.3f;
+        std::vector<uint8_t> active; std::vector<int> cells; pts.clear();
+        for (int x = 0; x < res; x += s) for (int y = 0; y < res; y += s) for (int z = 0; z < res; z += s) {
+            float mn = 1e30f, mx = -1e30f;
+            for (int c = 0; c < 8; c++) { const float v = grid[id(x + ((c & 1) ? s : 0), y + ((c & 2) ? s : 0), z + ((c >> 2) ? s : 0))]; mn = std::min(mn, v); mx = std::max(mx, v); }
+            const bool act = mx > lowTh - 0.6f && mn < highTh;                                                              // not clearly empty, not clearly full
+            cells.push_back(act ? 1 : 0); cells.push_back(x); cells.push_back(y); cells.push_back(z);
+            if (!act) continue;
+            for (int a = 0; a <= 2; a++) for (int b = 0; b <= 2; b++) for (int c = 0; c <= 2; c++) { const size_t g = id(x + a * h, y + b * h, z + c * h); if (state[g] == 0) { state[g] = 2; pts.push_back((uint32_t)g); } }
+        }
+        if (!evaluate(pts, f0, std::min(1.0f, f1))) return false;
+        for (size_t q = 0; q < cells.size(); q += 4) {                                                                       // the cells that were left alone: interpolate their new points
+            if (cells[q]) continue; const int x = cells[q + 1], y = cells[q + 2], z = cells[q + 3]; float cv[8];
+            for (int c = 0; c < 8; c++) cv[c] = grid[id(x + ((c & 1) ? s : 0), y + ((c & 2) ? s : 0), z + ((c >> 2) ? s : 0))];
+            for (int a = 0; a <= 2; a++) for (int b = 0; b <= 2; b++) for (int c = 0; c <= 2; c++) {
+                const size_t g = id(x + a * h, y + b * h, z + c * h); if (state[g]) continue; const float fx = a * 0.5f, fy = b * 0.5f, fz = c * 0.5f;
+                float v = 0; for (int k = 0; k < 8; k++) v += cv[k] * ((k & 1) ? fx : 1 - fx) * ((k & 2) ? fy : 1 - fy) * ((k >> 2) ? fz : 1 - fz);
+                grid[g] = v; state[g] = 1;
+            }
+        }
+    }
+    if (queries) *queries = nq; (void)done;
+    return true;
+}

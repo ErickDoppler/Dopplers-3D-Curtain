@@ -313,22 +313,36 @@ static void openPath(const std::string& path) {
     addDoc(std::move(d));
 }
 
-static bool fileDialog(bool save, const wchar_t* filter, const wchar_t* defExt, std::string& path, const std::string& initial = "") {
+static bool fileDialog(bool save, const wchar_t* filter, const wchar_t* defExt, std::string& path, const std::string& initial = "", int* filterIndex = nullptr) {
     wchar_t buf[MAX_PATH * 2] = {}; if (!initial.empty()) wcsncpy(buf, W(initial).c_str(), MAX_PATH * 2 - 1);
-    OPENFILENAMEW o = {sizeof o}; o.hwndOwner = g_main; o.lpstrFilter = filter; o.lpstrFile = buf; o.nMaxFile = MAX_PATH * 2; o.lpstrDefExt = defExt;
+    OPENFILENAMEW o = {sizeof o}; o.hwndOwner = g_main; o.lpstrFilter = filter; o.lpstrFile = buf; o.nMaxFile = MAX_PATH * 2; o.lpstrDefExt = defExt; o.nFilterIndex = 1;
     o.Flags = save ? (OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST) : (OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST);
     if (!(save ? GetSaveFileNameW(&o) : GetOpenFileNameW(&o))) return false;
-    path = sys::narrow(buf); return true;
+    path = sys::narrow(buf); if (filterIndex) *filterIndex = (int)o.nFilterIndex; return true;
+}
+// the formats the object can be written in (the order of the filter list)
+static const wchar_t* kMeshFilter = L"STL - 3D printing (*.stl)\0*.stl\0Wavefront OBJ (*.obj)\0*.obj\0STEP - CAD solid (*.step;*.stp)\0*.step;*.stp\0glTF binary (*.glb)\0*.glb\0glTF with a .bin file (*.gltf)\0*.gltf\0PLY (*.ply)\0*.ply\03MF - 3D printing (*.3mf)\0*.3mf\0OFF (*.off)\0*.off\0";
+static const wchar_t* kSaveFilter = L"Curtain project (*.curtain)\0*.curtain\0STL - 3D printing (*.stl)\0*.stl\0Wavefront OBJ (*.obj)\0*.obj\0STEP - CAD solid (*.step;*.stp)\0*.step;*.stp\0glTF binary (*.glb)\0*.glb\0glTF with a .bin file (*.gltf)\0*.gltf\0PLY (*.ply)\0*.ply\03MF - 3D printing (*.3mf)\0*.3mf\0OFF (*.off)\0*.off\0";
+static const char* kMeshExt[] = {"stl", "obj", "step", "glb", "gltf", "ply", "3mf", "off"};
+static bool isMeshExt(const std::string& e) { for (const char* x : kMeshExt) if (e == x) return true; return e == "stp"; }
+static bool pickMeshPath(const std::string& base, std::string& p) {
+    int fi = 1; if (!fileDialog(true, kMeshFilter, nullptr, p, base + ".stl", &fi)) return false;
+    if (!isMeshExt(extOf(p))) p += std::string(".") + kMeshExt[std::max(0, std::min(7, fi - 1))];
+    return true;
 }
 static void cmdOpen() {
-    std::string p; if (fileDialog(false, L"3D models and images\0*.obj;*.stl;*.ply;*.gltf;*.glb;*.step;*.stp;*.curtain;*.png;*.jpg;*.jpeg;*.bmp\0Curtain projects\0*.curtain\0All files\0*.*\0", nullptr, p)) openPath(p);
+    std::string p; if (fileDialog(false, L"3D models and images\0*.obj;*.stl;*.ply;*.off;*.gltf;*.glb;*.step;*.stp;*.curtain;*.png;*.jpg;*.jpeg;*.bmp\0Curtain projects\0*.curtain\0All files\0*.*\0", nullptr, p)) openPath(p);
 }
 static void cmdSaveAs() {
-    ModelDoc* d = activeModel(); if (!d) return; std::string p;
-    if (!fileDialog(true, L"Curtain project\0*.curtain\0", L"curtain", p, withExt(d->title, "curtain"))) return;
+    ModelDoc* d = activeModel(); if (!d) return; std::string p; int fi = 1;
+    if (!fileDialog(true, kSaveFilter, nullptr, p, withExt(d->title, "curtain"), &fi)) return;
+    if (extOf(p).empty() || !(extOf(p) == "curtain" || isMeshExt(extOf(p)))) p += fi <= 1 ? ".curtain" : std::string(".") + kMeshExt[std::min(7, fi - 2)];
+    if (isMeshExt(extOf(p))) {                                                                     // a model format: the object as it is now (size, rotation, position applied) is exported
+        std::string err; if (!saveMeshAny(p, d->world, d->cur.mesh->idx, err)) msg(err, MB_ICONERROR); else setStatusText("Saved the object as " + baseName(p));
+        return;
+    }
     if (saveCurtainFile(d, p)) { d->path = p; d->title = baseName(p); d->dirty = false; refreshTabs(); }
-}
-static void cmdSave() { ModelDoc* d = activeModel(); if (!d) return; if (d->path.empty() || extOf(d->path) != "curtain") { cmdSaveAs(); return; } if (saveCurtainFile(d, d->path)) { d->dirty = false; refreshTabs(); } }
+}static void cmdSave() { ModelDoc* d = activeModel(); if (!d) return; if (d->path.empty() || extOf(d->path) != "curtain") { cmdSaveAs(); return; } if (saveCurtainFile(d, d->path)) { d->dirty = false; refreshTabs(); } }
 static void cmdClose() {
     if (g_active < 0) return; Doc* d = g_docs[g_active].get();
     if (d->dirty && MessageBoxW(g_main, W("Close " + d->title + " without saving?").c_str(), L"Doppler's 3D Curtain", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
@@ -350,17 +364,16 @@ static bool loadCurtainFile(const std::string& path, std::unique_ptr<ModelDoc>& 
 static std::string identOf(const std::string& title) { std::string s = "curtain_"; for (char c : withExt(title, "")) s.push_back(isalnum((unsigned char)c) ? (char)tolower((unsigned char)c) : '_'); while (!s.empty() && s.back() == '_') s.pop_back(); return s; }
 static void cmdExport(int id) {
     ModelDoc* d = activeModel(); if (!d || !d->cur.mesh) return; std::string p, err; const std::string base = withExt(d->title, "");
-    if (id == IDM_EXP_OBJ || id == IDM_EXP_GLB) {
-        const bool obj = id == IDM_EXP_OBJ;
-        if (!fileDialog(true, obj ? L"Wavefront OBJ\0*.obj\0" : L"glTF binary\0*.glb\0", obj ? L"obj" : L"glb", p, base + (obj ? ".obj" : ".glb"))) return;
-        if (!(obj ? saveObj(p, d->world, d->cur.mesh->idx, err) : saveGlb(p, d->world, d->cur.mesh->idx, err))) msg(err, MB_ICONERROR); return;
+    if (id == IDM_EXP_OBJ || id == IDM_EXP_GLB) {                                                  // the edited object, in any model format
+        if (!pickMeshPath(base, p)) return;
+        if (!saveMeshAny(p, d->world, d->cur.mesh->idx, err)) msg(err, MB_ICONERROR); else setStatusText("Saved the object as " + baseName(p));
+        return;
     }
     ensureCurtainNow(d); if (!d->curtain) { msg("The curtain could not be computed."); return; }
     if (id == IDM_EXP_HEADER) { if (!fileDialog(true, L"C++ header\0*.h\0", L"h", p, base + "_curtain.h")) return; if (!sys::writeFile(p, curtainHeaderText(d->curtain->field, identOf(d->title)))) msg("Cannot write " + p, MB_ICONERROR); }
     else if (id == IDM_EXP_BLOB) { if (!fileDialog(true, L"Curtain field\0*.cvf\0", L"cvf", p, base + ".cvf")) return; if (!sys::writeFile(p, curtainBlob(d->curtain->field))) msg("Cannot write " + p, MB_ICONERROR); }
-    else if (id == IDM_EXP_CURTAIN_OBJ) { if (!fileDialog(true, L"Wavefront OBJ\0*.obj\0", L"obj", p, base + "_curtain.obj")) return; if (!saveObj(p, d->curtain->v, d->curtain->idx, err)) msg(err, MB_ICONERROR); }
+    else if (id == IDM_EXP_CURTAIN_OBJ) { if (!pickMeshPath(base + "_curtain", p)) return; if (!saveMeshAny(p, d->curtain->v, d->curtain->idx, err)) msg(err, MB_ICONERROR); else setStatusText("Saved the curtain surface as " + baseName(p)); }
 }
-
 // ---------------------------------------------------------------------------------------------------------------- image tab and queue
 static void imgReadParams(ImageDoc* im) {
     wchar_t b[64]; GetWindowTextW(g_imgEdit[0], b, 64); im->seed = _wtoi(b); GetWindowTextW(g_imgEdit[1], b, 64); im->steps = std::max(1, std::min(200, _wtoi(b)));
@@ -464,8 +477,8 @@ static HMENU buildMenu() {
     HMENU bar = CreateMenu(), file = CreatePopupMenu(), exp = CreatePopupMenu(), edit = CreatePopupMenu(), model = CreatePopupMenu(), help = CreatePopupMenu();
     AppendMenuW(file, MF_STRING, IDM_OPEN, L"&Open...\tCtrl+O"); AppendMenuW(file, MF_STRING, IDM_SAVE, L"&Save\tCtrl+S"); AppendMenuW(file, MF_STRING, IDM_SAVEAS, L"Save &As...");
     AppendMenuW(exp, MF_STRING, IDM_EXP_HEADER, L"Curtain for the engine - C++ header (.h)..."); AppendMenuW(exp, MF_STRING, IDM_EXP_BLOB, L"Curtain for the engine - binary field (.cvf)...");
-    AppendMenuW(exp, MF_STRING, IDM_EXP_CURTAIN_OBJ, L"Curtain surface - OBJ..."); AppendMenuW(exp, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(exp, MF_STRING, IDM_EXP_OBJ, L"Object - OBJ..."); AppendMenuW(exp, MF_STRING, IDM_EXP_GLB, L"Object - GLB...");
+    AppendMenuW(exp, MF_STRING, IDM_EXP_CURTAIN_OBJ, L"Curtain surface - STL, OBJ, STEP, GLB, ...  (the wrap as a mesh)..."); AppendMenuW(exp, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(exp, MF_STRING, IDM_EXP_OBJ, L"Object - STL, OBJ, STEP, GLB, glTF, PLY, 3MF, OFF...");
     AppendMenuW(file, MF_POPUP, (UINT_PTR)exp, L"&Export"); AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_DOWNLOAD, L"&Download models and CUDA libraries..."); AppendMenuW(file, MF_STRING, IDM_CLOSE, L"&Close tab\tCtrl+W"); AppendMenuW(file, MF_STRING, IDM_EXIT, L"E&xit");
     AppendMenuW(edit, MF_STRING, IDM_UNDO, L"&Undo\tCtrl+Z"); AppendMenuW(edit, MF_STRING, IDM_REDO, L"&Redo\tCtrl+Y");

@@ -31,17 +31,16 @@ Colours: object vertices are blue, the curtain is red while you edit it and yell
 
 The controls follow Ultimaker Cura: right mouse button rotates and tilts, middle button (or Shift + left) pans, the wheel zooms, left drag on the object moves it on the plate. The vertical stack on the left switches the view: Center, Left, Right, Front, Back, Top, Bottom. Tools show Cura-like handles in the view: move arrows, size boxes, rotation rings; the sliders and number boxes sit over the view. Undo and Redo keep 200 steps.
 
-**Eraser**: drag over the object with a round brush (size in the panel, in pixels). The vertices under the brush that are **closest to your eye** (the front layer, facing you) are deleted. Before a vertex goes, the vertices that were connected to it are collected, and the hole is closed with new triangles (ribs) between exactly those neighbours, so the surface stays closed. One stroke is one undo step.
+**Eraser**: a ball (its size is the brush size in the panel) slides over the surface under the mouse, about half sunk into the object. The vertices inside the ball are shown in red: they are the ones that will be deleted, on the front and on the back, loose shards included. Drag to erase. Before a vertex goes, the vertices that were connected to it are collected, and the hole is closed with new triangles (ribs) between exactly those neighbours; the new ribs never duplicate an existing edge, so the surface stays closed and manifold. Tiny loose fragments that a stroke leaves are swept up at its end. One stroke is one undo step.
 
 **Object details** removes a share of the object's vertices (0 - 100 %, steps of 0.01 %): a grid of 10000 x 10000 x 10000 cells is laid over the object, the vertices of the cells that "fall out" are merged into their nearest kept neighbour, so the holes close.
 
 ## Files
 
-* Open: **OBJ, STL, PLY, glTF / GLB**, `.curtain` projects, and pictures (PNG, JPG, BMP: opened in an Image tab). *STEP / STP is planned; it needs a CAD kernel to turn curved surfaces into triangles, so for now export the part as STL or OBJ.*
-* Each file is a tab. Drop files on the window.
-* Save: `.curtain` (the mesh, the transform, the curtain settings and the fitted field).
-* Export: **engine header** (`.h` with a `<name>_eval(x, y, z)` function), **binary field** (`.cvf`), the wrap surface (OBJ), the object (OBJ / GLB).
-
+* **Open:** OBJ, STL, PLY, OFF, glTF / GLB, **STEP / STP**, `.curtain` projects, and pictures (PNG, JPG, BMP: opened in an Image tab). Each file is a tab; drop files on the window.
+  STEP files are read with OpenCascade (in `d3c_step.dll`): the curved, trimmed B-rep faces are turned into a watertight triangle mesh (a test part with a cylindrical hole and a sphere came back with the exact bounding box and a volume within 0.002 % of OpenCascade's own value). Plain faceted STEP files (a list of triangles, like the ones this program writes) are read directly and fast: 673 000 triangles in 1.2 s.
+* **Save** writes a `.curtain` project (the mesh, the transform, the curtain settings and the fitted field). **Save As** and **File > Export > Object** also write the edited object, with its size, rotation and position applied, as: **STL** (binary), **OBJ**, **STEP** (a faceted solid: one planar face per triangle, millimetres, readable by CAD programs), **GLB**, **glTF** (+ `.bin`), **PLY** (binary), **3MF**, **OFF**. The same formats are available for the curtain surface (the wrap as a mesh).
+* Export for the engine: **C++ header** (`.h` with a `<name>_eval(x, y, z)` function) and **binary field** (`.cvf`).
 ## Image to 3D
 
 ![A picture turned into a model: the front view of the result](docs/screenshot-image-to-3d.png)
@@ -57,7 +56,7 @@ This is a **port of the Hunyuan3D 2.0 shape network that runs without ComfyUI**,
 | Voxel resolution | size of the distance volume the surface is taken from (default 256) |
 | Surface threshold | the level of the surface in that volume (default 0.7) |
 
-Notes: the picture is padded with white to a square (transparent areas become white); the shape only, no textures. A CUDA card is strongly advised: one network pass takes about 0.7 s on an RTX 3080 Ti and about 28 s on the processor. A whole picture takes about 1 minute at resolution 128 and about 4 minutes at the default 256 (most of it decoding the volume). On first start a window offers the **CUDA libraries** and the **Hunyuan3D model** (4.9 GB) for download, with progress, cancel and resume.
+Notes: the picture is padded with white to a square (transparent areas become white); the shape only, no textures. A CUDA card is strongly advised: one network pass takes about 0.7 s on an RTX 3080 Ti and about 28 s on the processor. A whole picture takes about 45 s at the default resolution 256 and about 1 minute at 384 on that card. The distance volume is decoded coarse to fine (every 4th point first, then only the cells near the surface), which is 5 times faster than decoding every point and gives the same occupancy to 0.01 %. On first start a window offers the **CUDA libraries** and the **Hunyuan3D model** (4.9 GB) for download, with progress, cancel and resume.
 ## Command line
 
 `d3c.exe` is a console program with the same core, made for scripts and for Claude Code. See [docs/CLI.md](docs/CLI.md).
@@ -70,7 +69,7 @@ d3c curtain model.glb --mode smooth --distance 5 --precision 192 --density 20000
 
 ## Building
 
-Needs the toolchain in `c:\workenv` (w64devkit, ninja, cmake), the same as Dopplers Bakery:
+Needs the toolchain in `c:\workenv` (w64devkit, ninja, cmake), the same as Dopplers Bakery. STEP import needs OpenCascade 7.9 built once with MinGW as shared libraries (modules DataExchange, ModelingAlgorithms; `OCCT_ROOT` in `CMakeLists.txt` points at the build); without it everything else still builds and STEP files report that `d3c_step.dll` is missing:
 
 ```
 build.bat      dist\Dopplers3DCurtain.exe   the window
@@ -78,6 +77,12 @@ build.bat      dist\Dopplers3DCurtain.exe   the window
 ```
 
 `tools\core_test.cpp` checks the core without a window; `tools\drv.ps1` drives the window through messages for tests.
+
+## Third-party code
+
+* **ggml / llama.cpp** (MIT): `third_party/ggml`, runs the Hunyuan3D network.
+* **OpenCascade Technology 7.9** (LGPL 2.1 with the OCCT exception): used only through the separate `d3c_step.dll` and its own DLLs (`libTK*.dll`), which are shipped as they are and can be replaced.
+* The Hunyuan3D 2.0 model weights are downloaded from Hugging Face under their own license (Tencent Hunyuan 3D 2.0 community license).
 
 ## License
 

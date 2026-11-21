@@ -7,10 +7,10 @@ Units are the model's own. **Z is up.** Every model is put on the plate: centred
 ## Commands
 
 ```
-d3c info <model>                      vertices, triangles, size, open edges, watertight or not
+d3c info <model>                      vertices, triangles, size, volume, surface area, open edges, watertight or not
 d3c curtain <model | project.curtain> [options]     compute the curtain, write files
 d3c reduce <model> --quality <percent> --out <file.obj|.glb>     "Object details": keep that share of the vertices
-d3c convert <in> <out>                OBJ / STL / PLY / glTF / GLB in, OBJ / GLB out (identical vertices are welded)
+d3c convert <in> <out>                OBJ / STL / PLY / OFF / glTF / GLB / STEP in; STL, OBJ, PLY, GLB, glTF, 3MF, OFF, STEP out (by the extension; identical vertices are welded)
 d3c eval <file.cvf> <x> <y> <z> ...   signed distance of the curtain at points (negative = inside)
 d3c image2mesh <picture> --out <file.obj|.glb> [options]     picture to 3D with the Hunyuan3D 2.0 shape network (model and CUDA libraries needed)
 ```
@@ -47,7 +47,7 @@ A `.curtain` project can be given instead of a model; options then override what
 | `--backend auto\|cpu\|gpu` | where to run | auto (CUDA when the libraries are there) |
 | `--stretch 1` | squash the picture to a square like the ComfyUI workflow, instead of padding with white | off |
 
-Time on an RTX 3080 Ti: about 30 s for the 20 steps, plus the volume decoding (resolution 128: about 25 s). On the processor it is 40 times slower. Combine it with `curtain` on the result: `d3c curtain model.glb ...`.
+Time on an RTX 3080 Ti: about 45 s in all at resolution 256 (30 s for the 20 steps, the rest loading and decoding the volume coarse to fine), about 1 minute at 384. On the processor it is 40 times slower. Combine it with `curtain` on the result: `d3c curtain model.glb ...`.
 
 ### Example
 

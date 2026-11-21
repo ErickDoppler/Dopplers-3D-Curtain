@@ -186,16 +186,57 @@ void drawGizmo(ModelDoc* d) {
     glLineWidth(1.0f);
 }
 
-// ------------------------------------------------------------------ the eraser brush
+// ------------------------------------------------------------------ the eraser: a ball that slides over the surface, half sunk into it. The vertices inside it are the ones that go.
 float g_brushPx = 40; POINT g_mouse = {-1, -1}; bool g_mouseIn = false, g_tracking = false;
-void drawBrush(int W, int H) {                                                                           // the brush circle follows the mouse
+struct EraserBall { bool valid = false; Vec3 c; float R = 0; std::vector<uint32_t> ids; } g_ball;
+void drawBrush(int W, int H) {                                                                           // no surface under the mouse: only the size of the brush
     glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); glOrtho(0, W, H, 0, -1, 1);
     glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
     glDisable(GL_DEPTH_TEST); glDisable(GL_LIGHTING); glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_LINE_SMOOTH);
     glLineWidth(2.0f); glColor4f(1.0f, 0.35f, 0.30f, 0.95f); glBegin(GL_LINE_LOOP);
     for (int i = 0; i < 72; i++) { const float a = 2 * kPi * i / 72; glVertex2f(g_mouse.x + std::cos(a) * g_brushPx, g_mouse.y + std::sin(a) * g_brushPx); }
-    glEnd(); glLineWidth(1.0f); glColor4f(1, 1, 1, 0.9f); glBegin(GL_LINES); glVertex2f(g_mouse.x - 5, g_mouse.y); glVertex2f(g_mouse.x + 5, g_mouse.y); glVertex2f(g_mouse.x, g_mouse.y - 5); glVertex2f(g_mouse.x, g_mouse.y + 5); glEnd();
-    glEnable(GL_DEPTH_TEST); glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix(); glMatrixMode(GL_MODELVIEW);
+    glEnd(); glEnable(GL_DEPTH_TEST); glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix(); glMatrixMode(GL_MODELVIEW);
+}
+void drawSphere(const Vec3& c, float R, bool wire) {
+    const int LAT = 18, LON = 32;
+    for (int i = 0; i < LAT; i++) {
+        const float a0 = kPi * i / LAT - kPi / 2, a1 = kPi * (i + 1) / LAT - kPi / 2;
+        glBegin(wire ? GL_LINE_STRIP : GL_TRIANGLE_STRIP);
+        for (int j = 0; j <= LON; j++) { const float b = 2 * kPi * j / LON; for (float a : {a0, a1}) glVertex3f(c.x + R * std::cos(a) * std::cos(b), c.y + R * std::cos(a) * std::sin(b), c.z + R * std::sin(a)); if (wire) break; }
+        glEnd();
+    }
+}
+void drawEraserPreview(ModelDoc* d) {
+    if (!g_ball.valid || !d->cur.mesh || d->hideObject) return;
+    glDisable(GL_LIGHTING); glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    if (!g_ball.ids.empty()) {                                                                            // the vertices that will be deleted, shown through the surface
+        glDisable(GL_DEPTH_TEST); glEnableClientState(GL_VERTEX_ARRAY); glVertexPointer(3, GL_FLOAT, 0, d->world.data()); glPointSize(5.0f); glColor4f(1.0f, 0.12f, 0.08f, 1.0f);
+        glDrawElements(GL_POINTS, (GLsizei)g_ball.ids.size(), GL_UNSIGNED_INT, g_ball.ids.data()); glDisableClientState(GL_VERTEX_ARRAY); glEnable(GL_DEPTH_TEST);
+    }
+    glDepthMask(GL_FALSE); glColor4f(1.0f, 0.35f, 0.30f, 0.20f); drawSphere(g_ball.c, g_ball.R, false);
+    glEnable(GL_LINE_SMOOTH); glLineWidth(1.0f); glColor4f(1.0f, 0.55f, 0.45f, 0.45f); drawSphere(g_ball.c, g_ball.R, true);
+    glDepthMask(GL_TRUE); glDisable(GL_BLEND);
+}
+// The ball sits where the cursor ray meets the object; with no surface there (a loose shard in the air) it sits on the vertex nearest to the eye under the brush.
+// Its radius is the brush size in pixels at that depth. Every vertex inside the ball is collected.
+void computeBall(ModelDoc* d, int px, int py, int W, int H) {
+    g_ball.valid = false; g_ball.ids.clear();
+    if (!d->cur.mesh || d->world.size() != d->cur.mesh->v.size() || d->hideObject) return;
+    Vec3 o, dir; ray(d->cam, px, py, W, H, o, dir); Cam k = camOf(d->cam); const float th = std::tan(rad(kFov) * 0.5f), asp = (float)W / std::max(1, H);
+    Vec3 c; float t;
+    if (rayMesh(d, o, dir, t)) c = o + dir * t;
+    else {
+        float zmin = 1e30f; const float r2 = g_brushPx * g_brushPx; bool any = false;
+        for (size_t i = 0; i < d->world.size(); i++) {
+            const Vec3 v = d->world[i] - k.eye; const float z = dot(v, k.fwd); if (z <= 1e-6f || z >= zmin) continue;
+            const float sx = (dot(v, k.right) / (z * th * asp) * 0.5f + 0.5f) * W, sy = (0.5f - dot(v, k.up) / (z * th) * 0.5f) * H, dx = sx - px, dy = sy - py;
+            if (dx * dx + dy * dy <= r2) { zmin = z; c = d->world[i]; any = true; }
+        }
+        if (!any) return;
+    }
+    const float z = std::max(1e-6f, dot(c - k.eye, k.fwd)); const float R = g_brushPx * 2.0f * z * th / std::max(1, H), R2 = R * R;
+    for (size_t i = 0; i < d->world.size(); i++) { const Vec3 q = d->world[i] - c; if (dot(q, q) <= R2) g_ball.ids.push_back((uint32_t)i); }
+    g_ball.c = c; g_ball.R = R; g_ball.valid = true;
 }
 void render() {
     if (!g_rc) return;
@@ -218,30 +259,19 @@ void render() {
         const Tool t = activeTool(); const bool editCurtain = t == Tool::Distance || t == Tool::Precision || t == Tool::Density;
         if (editCurtain || d->showCurtain) drawCurtain(d, editCurtain);
         drawGizmo(d);
-        if (activeTool() == Tool::Eraser && g_mouseIn) drawBrush(W, H);
+        if (activeTool() == Tool::Eraser && !d->hideObject) { drawEraserPreview(d); if (!g_ball.valid && g_mouseIn) drawBrush(W, H); }
     }
     SwapBuffers(g_dc);
 }
 
 // ------------------------------------------------------------------ the eraser
-// Deletes the vertices under the brush that are closest to the eye (the front layer, facing the eye) and closes the hole with ribs between their neighbours.
+// Deletes the vertices inside the ball and closes the holes with ribs between their neighbours.
 bool eraseAt(ModelDoc* d, int px, int py, int W, int H) {
-    if (!d->cur.mesh || d->world.size() != d->cur.mesh->v.size() || d->wnormal.size() != d->world.size()) return false;
-    Cam k = camOf(d->cam); const float th = std::tan(rad(kFov) * 0.5f), asp = (float)W / std::max(1, H), r2 = g_brushPx * g_brushPx;
-    std::vector<int> cand; std::vector<float> depth; float zmin = 1e30f;
-    for (size_t i = 0; i < d->world.size(); i++) {
-        const Vec3 v = d->world[i] - k.eye; const float z = dot(v, k.fwd); if (z <= 1e-6f) continue;
-        const float sx = (dot(v, k.right) / (z * th * asp) * 0.5f + 0.5f) * W, sy = (0.5f - dot(v, k.up) / (z * th) * 0.5f) * H, dx = sx - px, dy = sy - py;
-        if (dx * dx + dy * dy > r2 || dot(d->wnormal[i], v) >= 0) continue;                                   // outside the brush, or turned away from the eye
-        cand.push_back((int)i); depth.push_back(z); zmin = std::min(zmin, z);
-    }
-    if (cand.empty()) return false;
-    const float perPx = 2.0f * zmin * th / std::max(1, H), slab = perPx * (g_brushPx * 0.6f + 2.0f);        // only the layer nearest to the eye, not what lies behind it
-    std::vector<uint8_t> del(d->world.size(), 0); for (size_t j = 0; j < cand.size(); j++) if (depth[j] <= zmin + slab) del[cand[j]] = 1;
+    computeBall(d, px, py, W, H); if (!g_ball.valid || g_ball.ids.empty()) return false;
+    std::vector<uint8_t> del(d->world.size(), 0); for (uint32_t i : g_ball.ids) del[i] = 1;
     auto nm = eraseVertices(*d->cur.mesh, del); if (nm->idx.size() < 12) return false;                      // never erase the whole object
-    d->cur.mesh = nm; d->rebuild(); return true;
-}
-void finishErase(ModelDoc* d) {                                                                              // the mesh bounds changed: new pivot, the object stays where it is
+    d->cur.mesh = nm; d->rebuild(); g_ball.valid = false; return true;
+}void finishErase(ModelDoc* d) { if (auto cl = removeDebris(*d->cur.mesh)) d->cur.mesh = cl;                                                                              // the mesh bounds changed: new pivot, the object stays where it is
     Mat4 M = xformMatrix(d->cur.xf, d->pivot); Vec3 lo, hi; d->cur.mesh->bounds(lo, hi); const Vec3 np = (lo + hi) * 0.5f;
     d->cur.xf.pos = M.point(np); d->pivot = np; d->rebuild();
 }
@@ -294,7 +324,7 @@ LRESULT CALLBACK viewProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             g_drag.last = {px, py}; if (any) onEditChanged(d, false); InvalidateRect(h, nullptr, FALSE); return 0;
         }
         if (g_drag.mode == 0) {
-            if (activeTool() == Tool::Eraser) InvalidateRect(h, nullptr, FALSE);
+            if (activeTool() == Tool::Eraser) { if (d->cur.mesh) computeBall(d, px, py, rc.right, rc.bottom); InvalidateRect(h, nullptr, FALSE); }
             int hv = d->cur.mesh ? hitGizmo(d, px, py, rc.right, rc.bottom) : H_NONE;
             if (hv != g_hover) { g_hover = hv; InvalidateRect(h, nullptr, FALSE); }
             return 0;
@@ -329,7 +359,7 @@ LRESULT CALLBACK viewProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         InvalidateRect(h, nullptr, FALSE);
         return 0;
     }
-    case WM_MOUSELEAVE: g_tracking = false; g_mouseIn = false; InvalidateRect(h, nullptr, FALSE); return 0;
+    case WM_MOUSELEAVE: g_tracking = false; g_mouseIn = false; g_ball.valid = false; InvalidateRect(h, nullptr, FALSE); return 0;
     case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP: {
         if (g_drag.mode) {
             ModelDoc* d = activeModel(); const int mode = g_drag.mode; g_drag = Drag(); ReleaseCapture();
@@ -359,7 +389,7 @@ HWND createView(HWND parent, HINSTANCE inst) {
     RegisterClassW(&wc);
     return CreateWindowExW(0, L"D3CView", L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN, 0, 0, 100, 100, parent, nullptr, inst, nullptr);
 }
-void viewRedraw() { if (g_view) InvalidateRect(g_view, nullptr, FALSE); }
+void viewRedraw() { g_ball.valid = false; if (g_view) InvalidateRect(g_view, nullptr, FALSE); }
 bool viewSnapshot(const std::string& path) {                       // test aid: the current frame as a BMP (only reachable with the D3C_SNAPDIR environment variable)
     if (!g_rc) return false;
     render(); wglMakeCurrent(g_dc, g_rc); RECT rc; GetClientRect(g_view, &rc); const int W = rc.right, H = rc.bottom; if (W <= 0 || H <= 0) return false;

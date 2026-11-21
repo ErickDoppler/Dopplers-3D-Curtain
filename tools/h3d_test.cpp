@@ -1,6 +1,7 @@
 // Checks the Hunyuan3D port stage by stage against the tensors dumped by tools/h3d_ref.py (ComfyUI's own pipeline).
 //   h3d_test dino | dit | vae        (D3C_BACKEND=cpu|gpu|auto; D3C_REF = reference folder)
 // Pass criterion for every stage: relative L2 error against the reference below the stated limit (the weights are 16-bit).
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -78,6 +79,20 @@ int main(int argc, char** argv) {
         for (int ix = 0; ix < n; ix++) for (int iy = 0; iy < n; iy++) for (int iz = 0; iz < n; iz++) mine[((size_t)ix * n + iz) * n + iy] = grid[((size_t)ix * n + iy) * n + iz];
         compare("distance grid 65^3 from the sampled latent", mine, rg, 5e-2);
         printf("  mesh: %zu vertices, %zu triangles\n", m.v.size(), m.triCount());
+    }
+    if (stage == "hier") {                                                                 // coarse-to-fine decoding against the dense decoding of the same latent (made by: d3c image2mesh ... --dump <dir>)
+        const int res = getenv("D3C_RES") ? atoi(getenv("D3C_RES")) : 128; const float thr = 0.7f;
+        std::vector<float> lat; if (!readBin("final_latent", lat)) { printf("no final_latent.bin in %s (run d3c image2mesh --dump)\n", refDir().c_str()); return 2; }
+        ShapeVAE vae; if (!vae.load(ckpt(), err) || !vae.setLatents(lat.data(), err)) { printf("vae: %s\n", err.c_str()); return 2; } lap("load");
+        std::vector<float> dense, hier; size_t nq = 0;
+        if (!vae.decodeGrid(res, 1.01f, 2048, dense, err)) { printf("dense: %s\n", err.c_str()); return 2; } lap("dense decode");
+        if (!vae.decodeGridHier(res, 1.01f, 2048, hier, err, nullptr, &nq, 4)) { printf("hier: %s\n", err.c_str()); return 2; } lap("hierarchical decode");
+        std::vector<float> s = dense; std::sort(s.begin(), s.end()); auto pc = [&](double q) { return s[(size_t)(q * (s.size() - 1))]; };
+        printf("  dense values: min %.3f  1%% %.3f  50%% %.3f  95%% %.3f  99%% %.3f  max %.3f\n", s.front(), pc(0.01), pc(0.5), pc(0.95), pc(0.99), s.back());
+        size_t inter = 0, uni = 0, sd = 0, sh = 0; double md = 0; for (size_t i = 0; i < dense.size(); i++) { const bool a = dense[i] > thr, b = hier[i] > thr; inter += a && b; uni += a || b; sd += a; sh += b; if (std::fabs(dense[i] - thr) < 0.5) md = std::max(md, (double)std::fabs(dense[i] - hier[i])); }
+        const double iou = uni ? (double)inter / uni : 1.0, frac = (double)nq / dense.size();
+        printf("  occupied voxels: dense %zu, hierarchical %zu, IoU %.5f; evaluated %.1f %% of the points; largest difference near the surface %.3f\n", sd, sh, iou, frac * 100, md);
+        const bool ok = iou > 0.998; printf("%s hierarchical decode agrees with the dense one (IoU %.5f)\n", ok ? "ok:  " : "FAIL:", iou); if (!ok) fails++;
     }
     printf("\n%s (%d failures)\n", fails ? "FAILED" : "PASSED", fails);
     return fails ? 1 : 0;

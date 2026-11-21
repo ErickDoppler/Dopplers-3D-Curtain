@@ -11,4 +11,7 @@ copy /y build\Dopplers3DCurtain.exe dist\ >nul
 copy /y build\d3c.exe dist\ >nul
 if exist build\h3d_test.exe copy /y build\h3d_test.exe dist\ >nul
 xcopy /y /d /q runtime\*.dll dist\ >nul
+if exist build\d3c_step.dll copy /y build\d3c_step.dll dist\ >nul
+if exist build\step_make.exe copy /y build\step_make.exe dist\ >nul
+if exist E:\PROJECTS\DESKTOP\_deps\occt\build\win64\gcc\bin xcopy /y /d /q E:\PROJECTS\DESKTOP\_deps\occt\build\win64\gcc\bin\*.dll dist\ >nul
 echo built dist\Dopplers3DCurtain.exe and dist\d3c.exe

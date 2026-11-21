@@ -122,6 +122,19 @@ int main() {
         CHECK(op == border && nm == 0 && eu == 1, "open sheet, middle vertex erased: no new open edges (border %zu, now %zu), still a disc (Euler %ld)", border, op, eu);
     }
 
+    // eraser leftovers: a big awkward cut still closes, and loose fragments are swept up
+    {
+        auto openEdges = [](const Mesh& q) { std::map<std::pair<uint32_t, uint32_t>, int> e; for (size_t t = 0; t + 2 < q.idx.size(); t += 3) for (int k = 0; k < 3; k++) { uint32_t a = q.idx[t + k], b = q.idx[t + (k + 1) % 3]; e[{std::min(a, b), std::max(a, b)}]++; } size_t o = 0, o1 = 0, o3 = 0; for (auto& kv : e) { if (kv.second != 2) o++; if (kv.second == 1) o1++; if (kv.second > 2) o3++; } printf("      edges used once: %zu, more than twice: %zu\n", o1, o3); return o; };
+        std::vector<uint8_t> del(m.v.size(), 0); size_t cnt = 0; for (size_t i = 0; i < m.v.size(); i++) if (m.v[i].x > 0.0f && ((i * 2654435761u) >> 7) % 5 != 0) { del[i] = 1; cnt++; }   // half the torus, ragged
+        size_t holes = 0; auto r = eraseVertices(m, del, &holes);
+        CHECK(openEdges(*r) == 0 && r->triCount() > 100, "ragged cut of %zu vertices (%zu rings) leaves a closed surface (%zu vertices, %zu triangles)", cnt, holes, r->v.size(), r->triCount());
+        Mesh dirty = m; const uint32_t base = (uint32_t)dirty.v.size();
+        for (int k = 0; k < 3; k++) { for (int c = 0; c < 3; c++) dirty.v.emplace_back(5.0f + k, (float)c, (float)(c * c)); dirty.idx.insert(dirty.idx.end(), {base + k * 3, base + k * 3 + 1, base + k * 3 + 2}); }   // three loose triangles in the air
+        auto clean = removeDebris(dirty);
+        CHECK(clean && clean->triCount() == m.triCount() && clean->v.size() == m.v.size(), "loose fragments swept up: %zu -> %zu triangles", dirty.triCount(), clean ? clean->triCount() : 0);
+        CHECK(removeDebris(m) == nullptr, "a clean mesh is left alone");
+    }
+
     // details
     auto red = reduceDetails(m, 50.0);
     double frac = (double)red->v.size() / m.v.size(); bool valid = true; for (auto i : red->idx) if (i >= red->v.size()) valid = false;
@@ -137,7 +150,13 @@ int main() {
     Mesh g2; bool lg = loadMeshFile(tmp + "\\t.glb", g2, err);
     CHECK(lg && g2.v.size() == m.v.size() && g2.idx.size() == m.idx.size(), "glb round trip %zu/%zu %s", g2.v.size(), g2.idx.size() / 3, err.c_str());
     if (lg) { float dx = 0; for (size_t i = 0; i < m.v.size(); i++) dx = std::max(dx, length(m.v[i] - g2.v[i])); CHECK(dx < 1e-5f, "glb vertices come back in the same place (max %.2e)", dx); }
-    std::string blob = curtainBlob(r.field); CurtainField f2;
+    for (const char* ext : {"stl", "ply", "off", "gltf"}) {                                    // every export format that can be read back keeps the geometry
+        Mesh q; std::string path = tmp + "/rt." + ext; bool okw = saveMeshAny(path, m.v, m.idx, err), okr = okw && loadMeshFile(path, q, err);
+        CHECK(okw && okr && q.v.size() == m.v.size() && q.idx.size() == m.idx.size(), "%s round trip: %zu vertices, %zu triangles %s", ext, q.v.size(), q.idx.size() / 3, err.c_str());
+    }
+    { std::string path = tmp + "/rt.3mf"; std::string z; CHECK(saveMeshAny(path, m.v, m.idx, err) && sys::readFile(path, z) && z.size() > 1000 && z.compare(0, 2, "PK") == 0, "3mf is written as a zip (%zu bytes)", z.size()); }
+    { std::string path = tmp + "/rt.step"; Mesh q; bool okw = saveMeshAny(path, m.v, m.idx, err), okr = okw && loadMeshFile(path, q, err);    // OpenCascade is not needed for this faceted file
+      CHECK(okw && okr && q.v.size() == m.v.size() && q.idx.size() == m.idx.size(), "step (faceted) round trip: %zu vertices, %zu triangles %s", q.v.size(), q.idx.size() / 3, err.c_str()); }    std::string blob = curtainBlob(r.field); CurtainField f2;
     CHECK(curtainFieldFromBlob(blob, f2) && f2.g.size() == r.field.g.size(), "blob round trip (%zu bytes)", blob.size());
     float e1 = r.field.eval(Vec3(1.2f, 0.1f, 0.05f)), e2 = f2.eval(Vec3(1.2f, 0.1f, 0.05f)); CHECK(std::fabs(e1 - e2) < 0.01f, "quantised field agrees with the float one (%.4f vs %.4f)", e1, e2);
     std::string hdr = curtainHeaderText(r.field, "torus"); CHECK(hdr.find("torus_eval") != std::string::npos && hdr.size() > 1000, "header text %zu bytes", hdr.size());
